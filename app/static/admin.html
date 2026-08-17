@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#efeae1" />
+  <title>MedLock Control</title>
+  <link rel="stylesheet" href="/static/shared.css" />
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <div class="admin-shell">
+    <aside>
+      <div class="brand">
+        <span class="mono-mark">ML</span>
+        <span class="word">
+          <strong>MedLock</strong>
+          <small>Control plane</small>
+        </span>
+      </div>
+      <nav id="nav">
+        <p class="kicker">Workspace</p>
+        <button data-panel="overview" class="active">Overview</button>
+        <button data-panel="models">Models</button>
+        <button data-panel="endpoints">Endpoints & keys</button>
+        <p class="kicker">Data</p>
+        <button data-panel="stats">Audit</button>
+        <button data-panel="tables">Tables</button>
+        <button data-panel="docs">Documents</button>
+        <p class="kicker">System</p>
+        <button data-panel="stack">OpenClaw stack</button>
+        <button data-panel="logs">Logs</button>
+      </nav>
+      <div class="aside-foot">
+        <label class="token-box">Admin token
+          <input id="admin-token" type="password" autocomplete="off" placeholder="Required off-loopback" />
+        </label>
+        <a class="back" href="/">← Open chat</a>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="page-head">
+        <div>
+          <p class="kicker" id="page-kicker">Workspace</p>
+          <h1 id="page-title">Overview</h1>
+        </div>
+        <span class="pill" id="live-pill"><span class="dot"></span> Local</span>
+      </header>
+      <main>
+        <section id="overview" class="panel active"></section>
+        <section id="models" class="panel">
+          <p class="lede">Load a GGUF from disk or Hugging Face. Restart <code>./run.sh</code> after the file is in place.</p>
+          <div class="grid-2">
+            <form id="upload-form" class="card">
+              <h3>Upload GGUF</h3>
+              <label>Model file
+                <input type="file" name="file" accept=".gguf" required />
+              </label>
+              <button class="primary" type="submit">Upload</button>
+              <pre class="out" id="upload-out"></pre>
+            </form>
+            <form id="hf-form" class="card">
+              <h3>Hugging Face</h3>
+              <div class="inline">
+                <input name="q" placeholder="Search GGUF models" />
+                <button type="button" id="hf-search">Search</button>
+              </div>
+              <div id="hf-results" class="hf-results"></div>
+              <label>Repository
+                <input name="repo_id" placeholder="org/model" required />
+              </label>
+              <label>Filename
+                <input name="filename" placeholder="file.Q4_K_M.gguf" required />
+              </label>
+              <label class="check"><input type="checkbox" name="confirm" /> I reviewed the license and disk size</label>
+              <button class="primary" type="submit">Download</button>
+              <pre class="out" id="hf-out"></pre>
+            </form>
+          </div>
+        </section>
+        <section id="endpoints" class="panel">
+          <p class="lede">First-party chat uses loopback. Issue keys only for apps you run yourself.</p>
+          <div id="endpoint-urls" class="card endpoints"></div>
+          <div class="grid-2">
+            <form id="key-form" class="card">
+              <h3>Create key</h3>
+              <label>Name
+                <input name="name" placeholder="ehr-bridge" required />
+              </label>
+              <button class="primary" type="submit">Generate</button>
+              <pre class="out" id="key-out"></pre>
+            </form>
+            <div class="card">
+              <h3>Issued keys</h3>
+              <div id="key-list" class="key-list"></div>
+            </div>
+          </div>
+        </section>
+        <section id="stats" class="panel">
+          <p class="lede">Recent audit events. Request bodies are stored locally.</p>
+          <div id="stats-view"></div>
+        </section>
+        <section id="tables" class="panel">
+          <p class="lede">Read-only. Secrets in rows are redacted before display.</p>
+          <div id="table-tabs" class="tabs"></div>
+          <div class="table-wrap"><table id="table-view"></table></div>
+          <div class="pager">
+            <span id="table-pager" class="muted"></span>
+            <button type="button" id="table-prev">Previous</button>
+            <button type="button" id="table-next">Next</button>
+          </div>
+        </section>
+        <section id="docs" class="panel">
+          <p class="lede">Markdown and text files become retrieval chunks for chat.</p>
+          <form id="doc-form" class="card">
+            <label>File
+              <input type="file" name="file" accept=".md,.txt" />
+            </label>
+            <div class="inline">
+              <button class="primary" type="submit">Ingest file</button>
+              <button type="button" id="ingest-dir">Ingest data/documents</button>
+            </div>
+            <pre class="out" id="doc-out"></pre>
+          </form>
+        </section>
+        <section id="stack" class="panel">
+          <p class="lede">OpenClaw, NemoClaw, and OpenShell status on this host.</p>
+          <div id="stack-view"></div>
+        </section>
+        <section id="logs" class="panel">
+          <p class="lede">Tails from <code>logs/</code> on this machine.</p>
+          <div class="log-toolbar">
+            <select id="log-name">
+              <option>llama-server.log</option>
+              <option>app.log</option>
+              <option>systemd.out.log</option>
+              <option>systemd.err.log</option>
+            </select>
+            <button type="button" id="log-refresh">Refresh</button>
+          </div>
+          <pre class="out log" id="log-view"></pre>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script src="/static/admin.js"></script>
+</body>
+</html>

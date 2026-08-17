@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MedLock
+Comment=Local assistant
+Exec=PROJECT_DIR_PLACEHOLDER/MedLock.sh
+Path=PROJECT_DIR_PLACEHOLDER
+Icon=applications-science
+Terminal=false
+Categories=Office;MedicalSoftware;
+StartupNotify=true

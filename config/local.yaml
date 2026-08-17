@@ -1,0 +1,45 @@
+embeddings:
+  allow_cloud: false
+  mode: local
+  model_name: bge-small-en-v1.5
+  model_path: /home/rojan-upreti/Desktop/nvdiahackathon/models/embeddings/bge-small-en-v1.5
+inference:
+  allow_cloud_llm: false
+  backend: llama.cpp
+  context_length: 8192
+  llama_host: 127.0.0.1
+  llama_port: 8081
+  mode: local
+  n_gpu_layers: 99
+  served_model_name: medlock-llm
+  model_path: /home/rojan-upreti/Desktop/nvdiahackathon/llm/qwen2.5-0.5b/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+  mmproj_path: ''
+  llama_server_bin: /home/rojan-upreti/llama.cpp/build/bin/llama-server
+logging:
+  dir: logs
+  level: INFO
+  redact_secrets: true
+nemoclaw:
+  enabled: false
+  provider: llama-cpp
+  sandbox_name: medlock-assistant
+network:
+  allow_outbound_except_servicenow: false
+  servicenow_enabled: false
+project:
+  admin_hostname: medlock.admin
+  bind_host: 127.0.0.1
+  bind_port: 8000
+  chat_hostname: medlock.chat
+  name: MedLock
+  dir: /home/rojan-upreti/Desktop/nvdiahackathon
+rag:
+  chunk_overlap: 120
+  chunk_size: 800
+  demo_data_dir: data/demo_data
+  documents_dir: data/documents
+  enabled: true
+  top_k: 5
+safety:
+  medical_disclaimer: true
+  require_human_confirmation_for_writes: true

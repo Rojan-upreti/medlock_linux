@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#efeae1" />
+  <title>MedLock</title>
+  <link rel="stylesheet" href="/static/shared.css" />
+  <link rel="stylesheet" href="/static/chat.css" />
+</head>
+<body>
+  <div class="shell">
+    <div class="scrim" id="scrim" hidden></div>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <span class="mono-mark">ML</span>
+        <span class="word">
+          <strong>MedLock</strong>
+          <small>On this machine</small>
+        </span>
+      </div>
+      <button class="primary new-chat" id="new-chat">New conversation</button>
+      <p class="kicker sidebar-label">Recent</p>
+      <div class="thread-list" id="threads"></div>
+      <div class="sidebar-foot">
+        <span class="pill" id="model-pill"><span class="dot"></span> Local</span>
+        <a href="/admin">Control plane</a>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <button class="ghost menu-btn" id="menu-btn" type="button" aria-label="Open conversations">☰</button>
+        <div class="topbar-copy">
+          <h1>MedLock</h1>
+          <p>Local chat. Nothing leaves this machine.</p>
+        </div>
+        <div class="topbar-tools">
+          <label class="switch">
+            <input type="checkbox" id="use-rag" checked />
+            <span>Local documents</span>
+          </label>
+        </div>
+      </header>
+
+      <section class="messages" id="messages">
+        <div class="empty" id="empty">
+          <p class="kicker">Local clinical assistant</p>
+          <h2>Chat, letters, and notes that stay on this machine.</h2>
+          <p>Ask a question or draft correspondence. Referral, discharge, and admission letters can be downloaded as PDF.</p>
+          <div class="chips" id="chips">
+            <button type="button" data-prompt="Draft a referral letter to cardiology for a 62-year-old with new exertional chest pain. Use [placeholders] for missing details.">Referral letter</button>
+            <button type="button" data-prompt="Write a discharge letter after an overnight admission for community-acquired pneumonia. Use [placeholders] for missing details.">Discharge letter</button>
+            <button type="button" data-prompt="Write an admission record letter for a patient coming in with suspected pyelonephritis. Use [placeholders] for missing details.">Admission record</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="dock">
+        <form class="composer" id="composer">
+          <div class="attach-row" id="attach-row" hidden></div>
+          <div class="composer-bar">
+            <label class="attach-btn" title="Attach PDF or image">
+              <input type="file" id="file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,.md,application/pdf,image/*" />
+              <span aria-hidden="true">+</span>
+              <span class="sr-only">Attach file</span>
+            </label>
+            <textarea id="prompt" rows="1" placeholder="Message MedLock…"></textarea>
+            <button class="primary" type="submit" id="send">Send</button>
+          </div>
+        </form>
+        <p class="disclaimer">Runs locally. Answers can be wrong. Letters are drafts — review before sending.</p>
+      </div>
+    </main>
+  </div>
+  <script src="/static/chat.js?v=letters1"></script>
+</body>
+</html>

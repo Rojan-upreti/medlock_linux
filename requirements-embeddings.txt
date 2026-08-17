@@ -1,0 +1,2 @@
+# Optional better RAG (ONNX). Installer continues if this fails.
+fastembed>=0.4.0,<1.0

@@ -1,0 +1,25 @@
+project:
+  name: MedLock
+  bind_host: 127.0.0.1
+  bind_port: 8000
+  chat_hostname: medlock.chat
+  admin_hostname: medlock.admin
+inference:
+  mode: local
+  allow_cloud_llm: false
+  backend: llama.cpp
+  llama_host: 127.0.0.1
+  llama_port: 8081
+  served_model_name: medlock-llm
+embeddings:
+  mode: local
+  allow_cloud: false
+  model_name: BAAI/bge-small-en-v1.5
+network:
+  servicenow_enabled: false
+safety:
+  require_human_confirmation_for_writes: true
+  medical_disclaimer: true
+logging:
+  redact_secrets: true
+  level: INFO

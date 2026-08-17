@@ -1,0 +1,31 @@
+[Unit]
+Description=MedLock local enterprise agent (loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=-__PROJECT_DIR__/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=MEDLOCK_SKIP_NEMOCLAW=1
+ExecStart=__PROJECT_DIR__/run.sh --demo --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Hardening (user-level service; no extra privileges)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__PROJECT_DIR__/logs __PROJECT_DIR__/data __PROJECT_DIR__/backups __PROJECT_DIR__/config __PROJECT_DIR__/models __PROJECT_DIR__/llm "__DATA_DIR__"
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+StandardOutput=append:__PROJECT_DIR__/logs/systemd.out.log
+StandardError=append:__PROJECT_DIR__/logs/systemd.err.log
+
+[Install]
+WantedBy=default.target
