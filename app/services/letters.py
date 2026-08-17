@@ -7,14 +7,6 @@ import re
 from datetime import date
 from pathlib import Path
 
-FORMAT_SYSTEM = (
-    "Write in clear professional prose with complete sentences and short paragraphs. "
-    "When drafting a letter or clinical record, use a standard document layout "
-    "(date, recipient, subject, greeting, body, closing). "
-    "Use [square brackets] for any missing names, dates, or identifiers. "
-    "Do not use markdown headings or chatty preambles — output readable document text."
-)
-
 LETTER_KINDS = {
     "referral": "Referral letter",
     "discharge": "Discharge letter",
@@ -47,16 +39,6 @@ def classify_letter(user_text: str, assistant_text: str = "") -> str | None:
     if _LETTER_SHAPE.search(assistant_text or ""):
         return "letter"
     return None
-
-
-def letter_system_prompt(kind: str) -> str:
-    title = LETTER_KINDS.get(kind, "clinical letter")
-    return (
-        f"The user wants a {title.lower()}. Reply with the finished document only. "
-        "Layout: date on the first line; recipient; Re: subject; greeting; "
-        "body in short paragraphs; closing; sign-off as [Clinician name, role, organisation]. "
-        "Do not add commentary before or after the document."
-    )
 
 
 def letter_title(kind: str | None) -> str:

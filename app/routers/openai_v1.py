@@ -14,12 +14,20 @@ from app.services import llama
 from app.services.audit import log_event
 from app.services.embeddings import embed_texts
 from app.services.files import image_data_url, vision_enabled
-from app.services.letters import FORMAT_SYSTEM, classify_letter, letter_system_prompt
 from app.services.rag import build_rag_prefix, retrieve
 from app.services.redact import hash_api_key
 from app.settings import get_settings
 
 router = APIRouter(prefix="/v1", tags=["openai"])
+
+
+def _is_short_chitchat(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    if "?" in t:
+        return False
+    return len(t) < 12
 
 
 def _extract_bearer(authorization: str | None) -> str | None:
@@ -166,14 +174,12 @@ async def chat_completions(
                 break
 
     rag_hits = []
-    sys_msgs = [{"role": "system", "content": FORMAT_SYSTEM}]
-    letter_kind = classify_letter(user_text)
-    if letter_kind:
-        sys_msgs.append({"role": "system", "content": letter_system_prompt(letter_kind)})
+    sys_msgs = []
     rag_query = user_text
     if extract_blob:
         rag_query = f"{user_text}\n{extract_blob[:1500]}"
-    if use_rag and rag_query:
+    skip_rag = _is_short_chitchat(user_text) and not attachments and not extract_blob
+    if use_rag and rag_query and not skip_rag:
         rag_hits = retrieve(db, rag_query, top_k=4)
         prefix = build_rag_prefix(rag_hits)
         if prefix:
@@ -188,6 +194,7 @@ async def chat_completions(
     messages = sys_msgs + chat
     payload["messages"] = messages
     payload.setdefault("model", settings.SERVED_MODEL_NAME)
+    payload.setdefault("max_tokens", 256)
 
     conv = None
     if conversation_id:

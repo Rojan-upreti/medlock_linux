@@ -434,7 +434,8 @@ form.addEventListener("submit", async (e) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        messages,
+        messages: messages.slice(-8),
+        max_tokens: 256,
         stream: true,
         rag: ragEl.checked,
         conversation_id: conversationId,

@@ -26,6 +26,9 @@ START_AFTER=1
 KEEP_DATA=0
 FRESH=0
 WITH_HOSTS=0
+SELF_CONTAINED=0
+LLAMACPP_DIR_CLI=0
+MODEL_DIR_CLI=0
 CLI_WORKSPACE=""
 CLI_DATA_DIR=""
 CHAT_HOSTNAME="${CHAT_HOSTNAME:-medlock.chat}"
@@ -39,7 +42,8 @@ usage() {
   cat <<'EOF'
 MedLock installer — local LLM, local embeddings, local RAG. No cloud inference.
 Installs a background user service. Desktop icon opens the UI only.
-One workspace name per machine. Install asks where to store chats and uploads (Browse…).
+Frozen-archive installs (--self-contained) keep app, venv, models, chats, and logs
+in the folder you chose. Direct ./install.sh still asks for a workspace folder.
 
 Usage: ./install.sh [options]
 
@@ -62,6 +66,7 @@ Usage: ./install.sh [options]
   --no-start             Install only; do not launch MedLock.sh
   --keep-data            Keep existing chats/uploads (default wipes runtime data)
   --fresh                Wipe chats/uploads and re-ask workspace + data folder (no REINSTALL prompt)
+  --self-contained       Keep chats, logs, venv, and llama.cpp inside this project folder
   --workspace NAME       Workspace / organization name (skips the name prompt)
   --data-dir PATH        Parent folder for chats/uploads (skips Browse…)
   --help                 Show this help
@@ -78,9 +83,9 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --project-dir) PROJECT_DIR="${2:?--project-dir requires PATH}"; shift 2 ;;
-      --model-dir) MODEL_DIR="${2:?--model-dir requires PATH}"; shift 2 ;;
+      --model-dir) MODEL_DIR="${2:?--model-dir requires PATH}"; MODEL_DIR_CLI=1; shift 2 ;;
       --model-path) MODEL_PATH="${2:?--model-path requires PATH}"; shift 2 ;;
-      --llamacpp-dir) LLAMACPP_DIR="${2:?--llamacpp-dir requires PATH}"; shift 2 ;;
+      --llamacpp-dir) LLAMACPP_DIR="${2:?--llamacpp-dir requires PATH}"; LLAMACPP_DIR_CLI=1; shift 2 ;;
       --download-models) DOWNLOAD_MODELS=1; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
       --offline) OFFLINE=1; shift ;;
@@ -96,6 +101,7 @@ parse_args() {
       --no-start) START_AFTER=0; shift ;;
       --keep-data) KEEP_DATA=1; shift ;;
       --fresh) FRESH=1; KEEP_DATA=0; shift ;;
+      --self-contained) SELF_CONTAINED=1; shift ;;
       --workspace) CLI_WORKSPACE="${2:?--workspace requires NAME}"; shift 2 ;;
       --data-dir) CLI_DATA_DIR="${2:?--data-dir requires PATH}"; shift 2 ;;
       --help|-h) usage; exit 0 ;;
@@ -105,6 +111,10 @@ parse_args() {
 
   mkdir -p "$PROJECT_DIR"
   PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+  if [[ "$SELF_CONTAINED" == "1" ]]; then
+    [[ "$MODEL_DIR_CLI" == "1" ]] || MODEL_DIR="${PROJECT_DIR}/models"
+    [[ "$LLAMACPP_DIR_CLI" == "1" ]] || LLAMACPP_DIR="${PROJECT_DIR}/llama.cpp"
+  fi
   MODEL_DIR="${MODEL_DIR/#\~/$HOME}"
   LLAMACPP_DIR="${LLAMACPP_DIR/#\~/$HOME}"
   if [[ -n "$MODEL_PATH" ]]; then
@@ -266,27 +276,69 @@ pick_python() {
   command -v python3.11 || command -v python3
 }
 
+venv_is_local() {
+  local venv="$1"
+  local pybin="${venv}/bin/python"
+  [[ -x "$pybin" ]] || return 1
+  "$pybin" - "$PROJECT_DIR" "$venv" <<'PY'
+import os, sys
+project = os.path.realpath(sys.argv[1])
+venv = os.path.realpath(sys.argv[2])
+prefix = os.path.realpath(sys.prefix)
+if prefix != venv and not prefix.startswith(project + os.sep):
+    raise SystemExit(1)
+bin_dir = os.path.join(venv, "bin")
+for name in os.listdir(bin_dir):
+    path = os.path.join(bin_dir, name)
+    if os.path.islink(path):
+        target = os.path.realpath(path)
+        if target.startswith(project + os.sep) or target.startswith("/usr") or target.startswith("/bin"):
+            continue
+        if "nvdiahackathon" in target or "site-packages" in target:
+            raise SystemExit(1)
+        if os.path.dirname(os.path.dirname(target)) != venv and "python" in name:
+            # python -> /usr/bin/python3 is fine; python -> other tree venv is not
+            if "/.venv/" in target and not target.startswith(venv + os.sep):
+                raise SystemExit(1)
+    elif os.path.isfile(path):
+        try:
+            with open(path, "rb") as fh:
+                first = fh.readline()
+        except OSError:
+            continue
+        if not first.startswith(b"#!"):
+            continue
+        shebang = first[2:].decode("utf-8", "replace").strip().split()[0]
+        if shebang.startswith("/") and "/.venv/" in shebang and not shebang.startswith(venv + os.sep):
+            raise SystemExit(1)
+print("ok")
+PY
+}
+
 setup_venv() {
   log_step "Python virtual environment"
   local py
   py="$(pick_python)"
   local venv="${PROJECT_DIR}/.venv"
-  if [[ ! -x "${venv}/bin/python" ]]; then
-    log_info "Creating ${venv}"
-    "$py" -m venv "$venv"
-  else
+  if venv_is_local "$venv"; then
     log_ok "Reusing ${venv}"
+  else
+    if [[ -e "$venv" ]]; then
+      log_warn "Copied or foreign .venv detected — creating a new one in ${PROJECT_DIR}"
+      rm -rf "$venv"
+    else
+      log_info "Creating ${venv}"
+    fi
+    "$py" -m venv "$venv"
   fi
-  # shellcheck disable=SC1091
-  source "${venv}/bin/activate"
-  python -m pip install --upgrade pip setuptools wheel
+  "${venv}/bin/python" -m pip install --upgrade pip setuptools wheel
   require_file "${PROJECT_DIR}/requirements.txt"
-  pip install -r "${PROJECT_DIR}/requirements.txt"
+  "${venv}/bin/python" -m pip install -r "${PROJECT_DIR}/requirements.txt"
   if [[ -f "${PROJECT_DIR}/requirements-embeddings.txt" && "${OFFLINE:-0}" != "1" ]]; then
-    pip install -r "${PROJECT_DIR}/requirements-embeddings.txt" \
+    "${venv}/bin/python" -m pip install -r "${PROJECT_DIR}/requirements-embeddings.txt" \
       || log_warn "Optional embeddings extra failed; RAG will use a local lexical fallback. Later: pip install -r requirements-embeddings.txt"
   fi
-  python - <<'PY'
+  "${venv}/bin/python" - <<'PY'
 mods = ["fastapi", "uvicorn", "httpx", "yaml", "sqlalchemy", "dotenv", "huggingface_hub", "pypdf", "PIL"]
 failed = []
 for m in mods:
@@ -299,7 +351,7 @@ if failed:
     raise SystemExit("Import verification failed:\n  " + "\n  ".join(failed))
 print("imports ok:", ", ".join(mods))
 PY
-  if python -c "import webview" >/dev/null 2>&1; then
+  if "${venv}/bin/python" -c "import webview" >/dev/null 2>&1; then
     log_ok "pywebview available (desktop window)"
   else
     log_warn "pywebview import failed; desktop launcher prefers Chromium/Chrome --app="
@@ -433,6 +485,44 @@ maybe_reinstall_wipe() {
 
 pin_workspace() {
   log_step "Workspace name and data folder"
+  if [[ "$SELF_CONTAINED" == "1" ]]; then
+    local label="${CLI_WORKSPACE:-$(basename "$PROJECT_DIR")}"
+    mkdir -p "$PROJECT_DIR"/{data/uploads,data/documents,logs,backups}
+    export MEDLOCK_WORKSPACE="$label"
+    export MEDLOCK_DATA="$PROJECT_DIR"
+    export MEDLOCK_DATA_ROOT="$(dirname "$PROJECT_DIR")"
+    python3 - "$PROJECT_DIR/.env" "$label" "$PROJECT_DIR" "$MEDLOCK_DATA_ROOT" <<'PY'
+from pathlib import Path
+import sys
+path, name, data, parent = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+mapping = {
+    "MEDLOCK_WORKSPACE": name,
+    "MEDLOCK_DATA": data,
+    "MEDLOCK_DATA_ROOT": parent,
+}
+lines = []
+seen = set()
+for line in text.splitlines():
+    if line and not line.lstrip().startswith("#") and "=" in line:
+        key = line.split("=", 1)[0].strip()
+        if key in mapping:
+            lines.append(f"{key}={mapping[key]}")
+            seen.add(key)
+            continue
+    lines.append(line)
+for key, value in mapping.items():
+    if key not in seen:
+        lines.append(f"{key}={value}")
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+try:
+    path.chmod(0o600)
+except OSError:
+    pass
+PY
+    log_ok "Everything in this folder: ${PROJECT_DIR}"
+    return 0
+  fi
   if [[ -n "$CLI_WORKSPACE" ]]; then
     export MEDLOCK_WORKSPACE="$CLI_WORKSPACE"
   fi
@@ -576,6 +666,21 @@ PY
 setup_llamacpp() {
   log_step "llama.cpp"
   export LLAMACPP_DIR
+  mkdir -p "$(dirname "$LLAMACPP_DIR")"
+  if [[ ! -x "${LLAMACPP_DIR}/build/bin/llama-server" && -x "${HOME}/llama.cpp/build/bin/llama-server" ]]; then
+    local home_llama dest_llama
+    home_llama="$(cd "$HOME/llama.cpp" && pwd)"
+    mkdir -p "$LLAMACPP_DIR"
+    dest_llama="$(cd "$LLAMACPP_DIR" && pwd)"
+    if [[ "$home_llama" != "$dest_llama" ]]; then
+      log_info "Copying llama.cpp into ${LLAMACPP_DIR}"
+      if have_cmd rsync; then
+        rsync -a "${HOME}/llama.cpp/" "${LLAMACPP_DIR}/"
+      else
+        cp -a "${HOME}/llama.cpp/." "${LLAMACPP_DIR}/"
+      fi
+    fi
+  fi
   local bin
   bin="$(LLAMACPP_DIR="$LLAMACPP_DIR" "${SCRIPT_DIR}/scripts/setup_llamacpp.sh" | tail -n 1)"
   export LLAMA_SERVER_BIN="$bin"
@@ -707,7 +812,7 @@ print_report() {
   GGUF          : ${MODEL_PATH:-NONE — upload via admin hub}
   Config        : ${PROJECT_DIR}/config/local.yaml
   Chat window   : ./MedLock.sh  (opens UI; servers keep running)
-  Workspace     : ${MEDLOCK_WORKSPACE:-MedLock}  (${MEDLOCK_DATA:-~/MedLock/<name>})
+  Workspace     : ${MEDLOCK_WORKSPACE:-MedLock}  (${MEDLOCK_DATA:-$PROJECT_DIR})
   Browser       : http://127.0.0.1:${MEDLOCK_PORT:-8000}/
   Admin         : http://127.0.0.1:${MEDLOCK_PORT:-8000}/admin
   API           : http://127.0.0.1:${MEDLOCK_PORT:-8000}/v1/chat/completions

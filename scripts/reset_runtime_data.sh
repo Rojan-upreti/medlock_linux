@@ -69,13 +69,21 @@ if [[ -f "${PROJECT_DIR}/.env" ]]; then
   source "${PROJECT_DIR}/.env"
   set +a
   if [[ "$PURGE_HOME" == "1" && -n "${MEDLOCK_DATA:-}" && -d "${MEDLOCK_DATA}" ]]; then
-    case "${MEDLOCK_DATA}" in
-      "${HOME}/MedLock"/*) ;;
-      *)
-        log_warn "Removing previous data folder ${MEDLOCK_DATA}"
-        rm -rf "${MEDLOCK_DATA}"
-        ;;
-    esac
+    local data_real project_real
+    data_real="$(cd "${MEDLOCK_DATA}" && pwd)"
+    project_real="$(cd "${PROJECT_DIR}" && pwd)"
+    if [[ "$data_real" == "$project_real" ]]; then
+      wipe_sqlite "${PROJECT_DIR}/data"
+      wipe_uploads "${PROJECT_DIR}/data/uploads"
+    else
+      case "${MEDLOCK_DATA}" in
+        "${HOME}/MedLock"/*) ;;
+        *)
+          log_warn "Removing previous data folder ${MEDLOCK_DATA}"
+          rm -rf "${MEDLOCK_DATA}"
+          ;;
+      esac
+    fi
   fi
   if [[ -x "${PROJECT_DIR}/.venv/bin/python" ]]; then
     "${PROJECT_DIR}/.venv/bin/python" - <<'PY' || true

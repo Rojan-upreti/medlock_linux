@@ -1,4 +1,4 @@
-"""Workspace name + chosen data folder so the install tree does not store chats."""
+"""Workspace name + chosen data folder. Frozen installs keep data in the project dir."""
 
 from __future__ import annotations
 

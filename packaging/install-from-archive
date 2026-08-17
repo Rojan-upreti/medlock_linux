@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+# Bootstrap: pick one folder, extract the frozen MedLock tarball there, then
+# run the inner install.sh so app, venv, models, chats, and logs all live in it.
+# Usage: ./install nvdiahackathon-v1.1.tar.gz
+#        ./install nvdiahackathon.tar.gz
+#        ./install nvdiahackathon.gz
+set -Eeuo pipefail
+
+LIVE_TREE="${HOME}/Desktop/nvdiahackathon"
+FORCE=0
+DEST=""
+ARCHIVE=""
+EXTRA=()
+
+usage() {
+  cat <<'EOF'
+Extract a frozen MedLock archive into a folder you choose, then install there.
+
+Usage: ./install ARCHIVE.gz [install.sh options...]
+
+  ARCHIVE              nvdiahackathon-v1.1.tar.gz, nvdiahackathon.tar.gz, or nvdiahackathon.gz
+  --dest PATH          Install into this folder (skips the Browse dialog)
+  --force              Allow a non-empty destination, or ~/Desktop/nvdiahackathon
+  --help               Show this help
+
+A Browse dialog asks where MedLock should live. That folder gets the app,
+Python environment, models, chats, and logs. Nothing is reused from
+~/Desktop/nvdiahackathon.
+
+Remaining flags are passed to the extracted ./install.sh.
+Default inner flags: --fresh --self-contained
+EOF
+}
+
+die() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
+
+resolve_archive() {
+  local raw="$1"
+  if [[ -f "$raw" ]]; then
+    ARCHIVE="$(cd "$(dirname "$raw")" && pwd)/$(basename "$raw")"
+    return 0
+  fi
+  local dir base
+  dir="$(cd "$(dirname "$raw")" && pwd)"
+  base="$(basename "$raw")"
+  local candidates=()
+  case "$base" in
+    *.tar.gz) candidates+=("${dir}/${base}" "${dir}/${base%.tar.gz}.gz") ;;
+    *.tgz)    candidates+=("${dir}/${base}" "${dir}/${base%.tgz}.tar.gz") ;;
+    *.gz)     candidates+=("${dir}/${base}" "${dir}/${base%.gz}.tar.gz" "${dir}/${base%.gz}.tgz") ;;
+    *)        candidates+=("${dir}/${base}" "${dir}/${base}.tar.gz" "${dir}/${base}.gz") ;;
+  esac
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -f "$c" ]]; then
+      ARCHIVE="$c"
+      return 0
+    fi
+  done
+  die "Archive not found: $raw"
+}
+
+ask_install_dest() {
+  python3 - "$HOME" <<'PY'
+import os, sys
+from pathlib import Path
+
+home = Path(sys.argv[1]).expanduser().resolve()
+default_parent = home
+default_name = "MedLock"
+
+
+def refuse(path: Path) -> str | None:
+    abs_path = path.expanduser().resolve()
+    live = (home / "Desktop" / "nvdiahackathon").resolve()
+    desktop = (home / "Desktop").resolve()
+    if abs_path == home:
+        return "Pick a dedicated folder, not your home directory."
+    if abs_path == desktop:
+        return "Pick a dedicated folder, not the Desktop itself."
+    if abs_path == live:
+        return "That is the live source tree. Choose a different folder."
+    return None
+
+
+def emit(path: Path) -> None:
+    abs_path = path.expanduser().resolve()
+    err = refuse(abs_path)
+    if err:
+        print(err, file=sys.stderr)
+        raise SystemExit(2)
+    print(abs_path)
+
+
+def tk_pick() -> Path | None:
+    import tkinter as tk
+    from tkinter import filedialog, ttk
+
+    result: dict[str, str] = {}
+    root = tk.Tk()
+    root.title("Install MedLock")
+    root.resizable(False, False)
+    root.configure(bg="#efeae1")
+    frame = ttk.Frame(root, padding=18)
+    frame.grid()
+    ttk.Label(frame, text="Install MedLock in this folder").grid(column=0, row=0, columnspan=2, sticky="w")
+    ttk.Label(
+        frame,
+        text="App, models, chats, and logs all stay here.",
+    ).grid(column=0, row=1, columnspan=2, sticky="w", pady=(0, 8))
+
+    ttk.Label(frame, text="Folder name").grid(column=0, row=2, columnspan=2, sticky="w")
+    name_entry = ttk.Entry(frame, width=40)
+    name_entry.insert(0, default_name)
+    name_entry.grid(column=0, row=3, columnspan=2, pady=(6, 12), sticky="ew")
+    name_entry.focus()
+    name_entry.selection_range(0, tk.END)
+
+    ttk.Label(frame, text="Create it inside").grid(column=0, row=4, columnspan=2, sticky="w")
+    dir_entry = ttk.Entry(frame, width=32)
+    dir_entry.insert(0, str(default_parent))
+    dir_entry.grid(column=0, row=5, pady=(6, 12), sticky="ew")
+
+    def browse() -> None:
+        chosen = filedialog.askdirectory(
+            parent=root,
+            title="Create the MedLock folder inside…",
+            initialdir=dir_entry.get() or str(home),
+        )
+        if chosen:
+            dir_entry.delete(0, tk.END)
+            dir_entry.insert(0, chosen)
+
+    ttk.Button(frame, text="Browse…", command=browse).grid(column=1, row=5, padx=(8, 0), pady=(6, 12))
+
+    def ok(_event=None) -> None:
+        result["name"] = name_entry.get().strip() or default_name
+        result["parent"] = dir_entry.get().strip() or str(default_parent)
+        root.destroy()
+
+    def cancel() -> None:
+        root.destroy()
+
+    btns = ttk.Frame(frame)
+    btns.grid(column=0, row=6, columnspan=2, sticky="e")
+    ttk.Button(btns, text="Cancel", command=cancel).grid(column=0, row=0, padx=(0, 8))
+    ttk.Button(btns, text="Install here", command=ok).grid(column=1, row=0)
+    root.bind("<Return>", ok)
+    root.bind("<Escape>", lambda _e: cancel())
+    root.mainloop()
+    if "name" not in result:
+        return None
+    parent = Path(result["parent"]).expanduser()
+    name = result["name"].replace("/", "-").strip() or default_name
+    return parent / name
+
+
+def zenity_pick() -> Path | None:
+    import shutil, subprocess
+
+    if not shutil.which("zenity"):
+        return None
+    name_proc = subprocess.run(
+        [
+            "zenity",
+            "--entry",
+            "--title=Install MedLock",
+            "--text=Folder name (created inside the location you pick next)",
+            f"--entry-text={default_name}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if name_proc.returncode != 0:
+        return None
+    name = (name_proc.stdout.strip() or default_name).replace("/", "-")
+    proc = subprocess.run(
+        [
+            "zenity",
+            "--file-selection",
+            "--directory",
+            "--title=Create the MedLock folder inside…",
+            f"--filename={home}/",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip()) / name
+
+
+chosen = None
+dialog_shown = False
+if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+    try:
+        chosen = tk_pick()
+        dialog_shown = True
+    except Exception:
+        chosen = None
+    if chosen is None and not dialog_shown:
+        try:
+            chosen = zenity_pick()
+            dialog_shown = True
+        except Exception:
+            chosen = None
+if chosen is None and dialog_shown:
+    raise SystemExit(1)
+if chosen is None and sys.stdin.isatty():
+    try:
+        typed_name = input(f"Folder name [{default_name}]: ").strip() or default_name
+        typed_parent = input(f"Create it inside [{default_parent}]: ").strip() or str(default_parent)
+        chosen = Path(typed_parent).expanduser() / typed_name
+    except EOFError:
+        chosen = None
+if chosen is None:
+    raise SystemExit(1)
+emit(chosen)
+PY
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --force) FORCE=1; shift ;;
+    --dest) DEST="${2:?--dest requires PATH}"; shift 2 ;;
+    --) shift; EXTRA+=("$@"); break ;;
+    -*) EXTRA+=("$1"); shift ;;
+    *)
+      if [[ -z "$ARCHIVE" ]]; then
+        resolve_archive "$1"
+        shift
+      else
+        EXTRA+=("$1")
+        shift
+      fi
+      ;;
+  esac
+done
+
+[[ -n "$ARCHIVE" ]] || die "Usage: ./install nvdiahackathon.tar.gz"
+[[ -f "$ARCHIVE" ]] || die "Archive not found: $ARCHIVE"
+tar -tzf "$ARCHIVE" >/dev/null 2>&1 || die "Not a gzip tar archive: $ARCHIVE"
+
+if [[ -z "$DEST" ]]; then
+  printf '[INFO] Choose the folder where MedLock should live (app, models, chats, logs).\n'
+  if ! DEST="$(ask_install_dest)"; then
+    status=$?
+    if [[ "$status" == "2" ]]; then
+      die "That location is not allowed. Use --dest PATH for a dedicated folder."
+    fi
+    die "Install cancelled. Pass --dest PATH if you do not have a graphical dialog."
+  fi
+fi
+DEST="${DEST/#\~/$HOME}"
+mkdir -p "$(dirname "$DEST")"
+DEST="$(mkdir -p "$(dirname "$DEST")" && cd "$(dirname "$DEST")" && pwd)/$(basename "$DEST")"
+
+abs_live="$(cd "$LIVE_TREE" 2>/dev/null && pwd || true)"
+abs_home="$(cd "$HOME" && pwd)"
+abs_desktop="$(cd "${HOME}/Desktop" 2>/dev/null && pwd || true)"
+if [[ "$DEST" == "$abs_home" ]]; then
+  die "Pick a dedicated folder, not your home directory."
+fi
+if [[ -n "$abs_desktop" && "$DEST" == "$abs_desktop" ]]; then
+  die "Pick a dedicated folder, not the Desktop itself."
+fi
+if [[ "$FORCE" != "1" && -n "$abs_live" && "$DEST" == "$abs_live" ]]; then
+  die "Refusing to extract over the live tree ${LIVE_TREE}. Choose another folder or pass --force."
+fi
+
+if [[ -e "$DEST" ]] && [[ -n "$(ls -A "$DEST" 2>/dev/null || true)" ]]; then
+  if [[ "$FORCE" == "1" ]]; then
+    printf '[WARN] --force: installing into existing %s\n' "$DEST"
+  else
+    die "Destination exists and is not empty: $DEST  (pass --force to reuse it)"
+  fi
+fi
+
+printf '[INFO] Extracting %s -> %s\n' "$(basename "$ARCHIVE")" "$DEST"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/medlock-unpack.XXXXXX")"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+tar -xzf "$ARCHIVE" -C "$tmp"
+
+inner=""
+if [[ -x "${tmp}/install.sh" || -f "${tmp}/install.sh" ]]; then
+  inner="$tmp"
+else
+  inner="$(find "$tmp" -maxdepth 2 -type f -name install.sh -printf '%h\n' 2>/dev/null | head -n 1 || true)"
+fi
+[[ -n "$inner" && -f "${inner}/install.sh" ]] || die "Archive has no install.sh"
+
+mkdir -p "$DEST"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --delete --exclude='.venv/' "${inner}/" "${DEST}/"
+else
+  find "$DEST" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  cp -a "${inner}/." "$DEST/"
+  rm -rf "${DEST}/.venv"
+fi
+
+chmod +x "$DEST"/install.sh "$DEST"/MedLock.sh "$DEST"/run.sh "$DEST"/start.sh \
+  "$DEST"/verify_install.sh "$DEST"/uninstall.sh "$DEST"/packaging/install-from-archive \
+  "$DEST"/scripts/*.sh 2>/dev/null || true
+
+if [[ ! -x "${DEST}/llama.cpp/build/bin/llama-server" && -x "${HOME}/llama.cpp/build/bin/llama-server" ]]; then
+  printf '[INFO] Copying llama.cpp into %s/llama.cpp\n' "$DEST"
+  mkdir -p "${DEST}/llama.cpp"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a "${HOME}/llama.cpp/" "${DEST}/llama.cpp/"
+  else
+    cp -a "${HOME}/llama.cpp/." "${DEST}/llama.cpp/"
+  fi
+fi
+
+has_keep=0
+for a in "${EXTRA[@]+"${EXTRA[@]}"}"; do
+  case "$a" in
+    --keep-data|--repair) has_keep=1 ;;
+  esac
+done
+inner_args=(--self-contained)
+if [[ "$has_keep" != "1" ]]; then
+  inner_args+=(--fresh)
+fi
+inner_args+=("${EXTRA[@]+"${EXTRA[@]}"}")
+
+printf '[ OK ] Unpacked. Running installer in %s\n' "$DEST"
+cd "$DEST"
+exec ./install.sh "${inner_args[@]}"

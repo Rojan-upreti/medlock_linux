@@ -6,11 +6,11 @@ embeddings:
 inference:
   allow_cloud_llm: false
   backend: llama.cpp
-  context_length: 8192
+  context_length: 2048
   llama_host: 127.0.0.1
   llama_port: 8081
   mode: local
-  n_gpu_layers: 99
+  n_gpu_layers: 0
   served_model_name: medlock-llm
   model_path: /home/rojan-upreti/Desktop/nvdiahackathon/llm/qwen2.5-0.5b/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
   mmproj_path: ''

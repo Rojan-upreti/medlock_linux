@@ -14,11 +14,34 @@ Cloud LLM inference is **disabled in config** and `run.sh` will refuse to start 
                                             v
                                          local GGUF
 
-  User data:  chosen folder / <workspace>/   (sqlite, uploads, logs; default ~/MedLock/<name>)
-  Install:    this tree                 (code, venv, GGUF, .env)
+  User data:  the folder you chose at install   (sqlite, uploads, logs)
+  Install:    that same folder                  (code, venv, GGUF, .env)
 ```
 
 Weights are **not** committed to git. The default bundled model is **Qwen2.5 0.5B Instruct Q4_K_M** (~400 MB) at `llm/qwen2.5-0.5b/`. If that file is present, install uses it automatically. Otherwise `./install.sh --download-models` fetches it. Upload MedGemma / Gemma 4 from the admin hub when you have more RAM.
+
+## Frozen `.tar.gz` installer
+
+This live tree can keep changing. To snapshot **code + GGUF + embeddings + venv + llama.cpp** into a file that will not change:
+
+```bash
+./scripts/pack_installer.sh
+```
+
+Writes (default `~/Desktop`):
+
+- `nvdiahackathon.tar.gz`
+- `nvdiahackathon.gz` (alias)
+- `install`
+
+Install from that pair (does **not** unpack over `~/Desktop/nvdiahackathon`):
+
+```bash
+cd ~/Desktop
+./install nvdiahackathon.tar.gz
+```
+
+or `./install nvdiahackathon.gz`. A Browse dialog asks where MedLock should live; **everything** (app, `.venv`, models, chats, logs) goes in that folder. Extra flags are forwarded (`./install nvdiahackathon.tar.gz --keep-data`). Skip the dialog with `--dest PATH`. The archive omits `.env`, `.git`, `.venv`, chats, uploads, and logs.
 
 ## One-command standard installation
 
@@ -48,7 +71,7 @@ Preferred launchers:
 | `./start.sh` | install if needed, then `MedLock.sh` |
 | `./run.sh --demo` | servers in the foreground (Ctrl+C stops them) |
 
-Install pins **one** workspace name and a **data folder** you choose (Browse…, default `~/MedLock`). Files live in `<folder>/<name>/` (`data/medlock.sqlite`, `data/uploads/`, `data/documents/`, `logs/`). Demo RAG playbooks still come from install `data/demo_data/`.
+Install pins **one** folder. Frozen `./install archive` puts chats in that same folder (`data/medlock.sqlite`, `data/uploads/`, `logs/`). Running `./install.sh` from a source tree still asks for a separate workspace folder (Browse…, default `~/MedLock/<name>`). Demo RAG playbooks still come from install `data/demo_data/`.
 
 `./install.sh` wipes chats unless you pass `--keep-data` or `--repair`.
 
@@ -68,7 +91,7 @@ In the composer, use **+** or drag-and-drop. Allowed: pdf, png, jpg, webp, gif, 
 
 ## Healthcare without a fine-tune
 
-The app always injects a clinical system prompt, expands RAG queries, and ships demo playbooks (referral, SOAP, discharge, patient education) under `data/demo_data/`. Re-ingest happens when those files change size.
+Demo playbooks under `data/demo_data/` are optional RAG context when Local documents is on. Chat does not inject a system persona.
 
 ## Offline / preloaded-model installation
 
@@ -244,20 +267,24 @@ Does not uninstall OS packages or the llama.cpp tree under `--llamacpp-dir`.
 
 ```
 [PROJECT_DIR]                 install tree (code + models)
-├── app/                      FastAPI + chat/admin UI + desktop/workspace
-├── MedLock.sh                desktop launcher
-├── packaging/MedLock.desktop shortcut template
-├── config/local.yaml         generated; cloud LLM forced off
-├── data/demo_data            synthetic clinical playbooks
-├── data/documents            optional extra RAG corpus in the install tree
-├── db/schema.sql             Postgres audit + RAG
-├── llm/                      bundled Qwen 0.5B GGUF (default); optional extra GGUFs
-├── models/                   embeddings cache
-├── scripts/                  installer helpers
-├── systemd/                  user unit template (headless)
-└── .venv/
+   ├── app/                      FastAPI + chat/admin UI + desktop/workspace
+   ├── MedLock.sh                desktop launcher
+   ├── packaging/MedLock.desktop shortcut template
+   ├── config/local.yaml         generated; cloud LLM forced off
+   ├── data/demo_data            synthetic clinical playbooks
+   ├── data/documents            RAG corpus
+   ├── data/uploads/             chats attachments (self-contained install)
+   ├── data/medlock.sqlite       chats (self-contained install)
+   ├── db/schema.sql             Postgres audit + RAG
+   ├── llm/                      bundled Qwen 0.5B GGUF (default); optional extra GGUFs
+   ├── llama.cpp/                local llama-server (self-contained install)
+   ├── models/                   embeddings cache
+   ├── logs/                     app + systemd logs
+   ├── scripts/                  installer helpers
+   ├── systemd/                  user unit template (headless)
+   └── .venv/
 
-~/MedLock/<workspace>/        default user data (or the folder you Browse at install)
+~/MedLock/<workspace>/        only used if you run ./install.sh without --self-contained
 ├── data/medlock.sqlite
 ├── data/uploads/
 ├── data/documents/
@@ -270,7 +297,7 @@ Does not uninstall OS packages or the llama.cpp tree under `--llamacpp-dir`.
 ./install.sh --project-dir PATH --model-dir PATH --model-path PATH \
   --llamacpp-dir PATH --download-models --non-interactive --offline \
   --with-systemd --without-systemd --test-servicenow --repair --yes \
-  --skip-nemoclaw --keep-data --fresh --workspace NAME --data-dir PATH --help
+  --skip-nemoclaw --keep-data --fresh --self-contained --workspace NAME --data-dir PATH --help
 ```
 
 `--fresh` wipes chats and re-asks the workspace name and data folder (no `REINSTALL` prompt). `--workspace` and `--data-dir` skip those prompts.

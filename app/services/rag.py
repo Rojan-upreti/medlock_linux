@@ -98,6 +98,8 @@ def _keyword_score(query: str, text: str) -> float:
 
 
 def retrieve(db: Session, query: str, top_k: int = 5) -> list[dict]:
+    if db.query(Chunk.id).first() is None:
+        return []
     qvec = embed_texts([query])[0]
     rows = db.query(Chunk).all()
     scored: list[tuple[float, Chunk]] = []

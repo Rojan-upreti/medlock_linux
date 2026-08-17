@@ -45,13 +45,13 @@
 
       <section class="messages" id="messages">
         <div class="empty" id="empty">
-          <p class="kicker">Local clinical assistant</p>
-          <h2>Chat, letters, and notes that stay on this machine.</h2>
-          <p>Ask a question or draft correspondence. Referral, discharge, and admission letters can be downloaded as PDF.</p>
+          <p class="kicker">Local assistant</p>
+          <h2>Chat with a model that stays on this machine.</h2>
+          <p>Ask anything. Attach a PDF or image if you want it in context. Letters can still be downloaded as PDF when the reply looks like one.</p>
           <div class="chips" id="chips">
-            <button type="button" data-prompt="Draft a referral letter to cardiology for a 62-year-old with new exertional chest pain. Use [placeholders] for missing details.">Referral letter</button>
-            <button type="button" data-prompt="Write a discharge letter after an overnight admission for community-acquired pneumonia. Use [placeholders] for missing details.">Discharge letter</button>
-            <button type="button" data-prompt="Write an admission record letter for a patient coming in with suspected pyelonephritis. Use [placeholders] for missing details.">Admission record</button>
+            <button type="button" data-prompt="Hello — what can you help me with?">Say hello</button>
+            <button type="button" data-prompt="Summarize this in a few bullets.">Summarize</button>
+            <button type="button" data-prompt="Explain this like I am new to the topic.">Explain simply</button>
           </div>
         </div>
       </section>
@@ -69,10 +69,10 @@
             <button class="primary" type="submit" id="send">Send</button>
           </div>
         </form>
-        <p class="disclaimer">Runs locally. Answers can be wrong. Letters are drafts — review before sending.</p>
+        <p class="disclaimer">Runs locally. Answers can be wrong.</p>
       </div>
     </main>
   </div>
-  <script src="/static/chat.js?v=letters1"></script>
+  <script src="/static/chat.js?v=noguard"></script>
 </body>
 </html>

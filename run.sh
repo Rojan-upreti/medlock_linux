@@ -96,6 +96,63 @@ SERVED="${SERVED_MODEL_NAME:-medlock-llm}"
 API_KEY="${LLAMA_API_KEY:-}"
 [[ -n "$API_KEY" ]] || die "LLAMA_API_KEY is empty"
 
+# Resolve ctx / GPU layers from yaml, then force a CPU profile when nvidia-smi is missing
+# (stale local.yaml often still has 8192 / 99 from GPU defaults).
+eval "$(
+  LLAMA_CTX="${LLAMA_CTX:-}" LLAMA_N_GPU_LAYERS="${LLAMA_N_GPU_LAYERS:-}" \
+    python3 - "$CFG" <<'PY'
+import os, shutil, subprocess, sys
+from pathlib import Path
+
+try:
+    import yaml
+    inf = (yaml.safe_load(Path(sys.argv[1]).read_text()) or {}).get("inference") or {}
+except Exception:
+    inf = {}
+
+def has_gpu() -> bool:
+    if shutil.which("nvidia-smi") is None:
+        return False
+    try:
+        return subprocess.run(["nvidia-smi", "-L"], capture_output=True, timeout=5, check=False).returncode == 0
+    except Exception:
+        return False
+
+gpu = has_gpu()
+env_ctx = os.environ.get("LLAMA_CTX", "").strip()
+env_ngl = os.environ.get("LLAMA_N_GPU_LAYERS", "").strip()
+yaml_ctx = inf.get("context_length")
+yaml_ngl = inf.get("n_gpu_layers")
+
+if env_ctx:
+    ctx = int(env_ctx)
+elif gpu:
+    ctx = int(yaml_ctx or 8192)
+else:
+    ctx = int(yaml_ctx or 2048)
+    if ctx > 2048:
+        ctx = 2048
+
+if env_ngl:
+    ngl = int(env_ngl)
+elif gpu:
+    ngl = int(yaml_ngl if yaml_ngl is not None else 99)
+else:
+    ngl = 0
+
+cpus = os.cpu_count() or 4
+threads = max(1, min(6, cpus // 2))
+print(f"HAS_GPU={1 if gpu else 0}")
+print(f"LLAMA_CTX={ctx}")
+print(f"LLAMA_N_GPU_LAYERS={ngl}")
+print(f"LLAMA_THREADS={threads}")
+PY
+)"
+: "${HAS_GPU:=0}"
+: "${LLAMA_CTX:=2048}"
+: "${LLAMA_N_GPU_LAYERS:=0}"
+: "${LLAMA_THREADS:=4}"
+
 llama_cmd=(
   "$LLAMA_BIN"
   --model "$MODEL_PATH"
@@ -103,10 +160,21 @@ llama_cmd=(
   --port "$LLAMA_PORT"
   --api-key "$API_KEY"
   --alias "$SERVED"
-  --ctx-size "${LLAMA_CTX:-8192}"
-  --n-gpu-layers "${LLAMA_N_GPU_LAYERS:-99}"
+  --ctx-size "${LLAMA_CTX}"
+  --n-gpu-layers "${LLAMA_N_GPU_LAYERS}"
   --metrics
 )
+if [[ "${HAS_GPU:-0}" != "1" ]]; then
+  llama_cmd+=(
+    --threads "${LLAMA_THREADS}"
+    --batch-size 512
+    --ubatch-size 128
+    --n-predict 256
+  )
+  log_info "CPU llama-server: ctx=${LLAMA_CTX} threads=${LLAMA_THREADS} ngl=0 n-predict=256"
+else
+  log_info "GPU llama-server: ctx=${LLAMA_CTX} ngl=${LLAMA_N_GPU_LAYERS}"
+fi
 if [[ -n "${MMPROJ_PATH:-}" && -f "${MMPROJ_PATH}" ]]; then
   llama_cmd+=(--mmproj "$MMPROJ_PATH")
 fi
@@ -120,7 +188,7 @@ app_cmd=(
 
 if [[ "$DRY_RUN" == "1" ]]; then
   log_ok "Dry-run passed"
-  log_info "Would start llama-server: ${LLAMA_BIN} --model <redacted-path> --host ${LLAMA_HOST} --port ${LLAMA_PORT}"
+  log_info "Would start llama-server: ${LLAMA_BIN} --model <redacted-path> --host ${LLAMA_HOST} --port ${LLAMA_PORT} --ctx-size ${LLAMA_CTX} --n-gpu-layers ${LLAMA_N_GPU_LAYERS}"
   log_info "Would start uvicorn on ${HOST}:${PORT}"
   exit 0
 fi
@@ -130,11 +198,29 @@ if [[ "$DEMO" == "1" ]]; then
   export MEDLOCK_DEMO=1
 fi
 
-# Stop leftover llama-server we started (same pid file only)
+# Restart llama-server when flags changed (stale 8192-ctx CPU process is the common case).
 PIDF="${LOG_DIR}/llama-server.pid"
-if [[ -f "$PIDF" ]] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then
-  log_info "llama-server already running (pid $(cat "$PIDF"))"
-else
+reuse_llama=0
+if [[ -f "$PIDF" ]]; then
+  old_pid="$(cat "$PIDF" 2>/dev/null || true)"
+  if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+    old_cmd="$(tr '\0' ' ' < "/proc/${old_pid}/cmdline" 2>/dev/null || true)"
+    if [[ "$old_cmd" == *"--ctx-size ${LLAMA_CTX}"* && "$old_cmd" == *"--n-gpu-layers ${LLAMA_N_GPU_LAYERS}"* ]]; then
+      reuse_llama=1
+      log_info "llama-server already running (pid ${old_pid})"
+    else
+      log_info "Restarting llama-server so new CPU/GPU flags take effect"
+      kill "$old_pid" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        kill -0 "$old_pid" 2>/dev/null || break
+        sleep 0.4
+      done
+      kill -9 "$old_pid" 2>/dev/null || true
+      rm -f "$PIDF"
+    fi
+  fi
+fi
+if [[ "$reuse_llama" != "1" ]]; then
   log_info "Starting llama-server on ${LLAMA_HOST}:${LLAMA_PORT}"
   "${llama_cmd[@]}" >> "${LOG_DIR}/llama-server.log" 2>&1 &
   echo $! > "$PIDF"

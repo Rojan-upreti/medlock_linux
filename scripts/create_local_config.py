@@ -3,11 +3,14 @@
 
 Does not overwrite an existing config unless --force is passed.
 Cloud LLM inference is always forced off.
+CPU-only machines get a smaller context and n_gpu_layers=0 even when yaml already exists.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -76,9 +79,38 @@ def _as_int(value: str | None, default: int) -> int:
     return int(value)
 
 
+def has_nvidia_gpu() -> bool:
+    if shutil.which("nvidia-smi") is None:
+        return False
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def apply_cpu_inference(cfg: dict) -> bool:
+    """Shrink GPU defaults on CPU-only boxes. Returns True if cfg changed."""
+    if has_nvidia_gpu():
+        return False
+    inf = cfg.setdefault("inference", {})
+    changed = False
+    if int(inf.get("n_gpu_layers") or 0) != 0:
+        inf["n_gpu_layers"] = 0
+        changed = True
+    ctx = int(inf.get("context_length") or 2048)
+    if ctx > 2048:
+        inf["context_length"] = 2048
+        changed = True
+    return changed
+
+
 def build_config(project_dir: Path) -> dict:
-    cfg = DEFAULTS.copy()
-    # Deep-ish copy of nested dicts
     cfg = yaml.safe_load(yaml.safe_dump(DEFAULTS))
     cfg["project"]["bind_host"] = os.environ.get("MEDLOCK_HOST", "127.0.0.1")
     cfg["project"]["bind_port"] = _as_int(os.environ.get("MEDLOCK_PORT"), 8000)
@@ -100,12 +132,18 @@ def build_config(project_dir: Path) -> dict:
     cfg["network"]["servicenow_enabled"] = _as_bool(os.environ.get("SERVICENOW_ENABLED"), False)
     cfg["logging"]["redact_secrets"] = True
     cfg["safety"]["require_human_confirmation_for_writes"] = True
+    apply_cpu_inference(cfg)
     return cfg
 
 
 def cloud_llm_blocked(cfg: dict) -> bool:
     inf = cfg.get("inference") or {}
     return inf.get("mode") == "local" and inf.get("allow_cloud_llm") is False
+
+
+def _write(path: Path, cfg: dict) -> None:
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    os.chmod(path, 0o640)
 
 
 def main() -> int:
@@ -121,14 +159,20 @@ def main() -> int:
     if not cloud_llm_blocked(cfg):
         raise SystemExit("Refusing to write a config that allows cloud LLM inference")
     if out.exists() and not args.force:
-        print(f"Keeping existing {out}")
+        existing = yaml.safe_load(out.read_text(encoding="utf-8")) or {}
+        if apply_cpu_inference(existing):
+            _write(out, existing)
+            print(f"Updated CPU inference defaults in {out}")
+            cfg = existing
+        else:
+            print(f"Keeping existing {out}")
+        if args.do_print:
+            print(yaml.safe_dump(cfg, sort_keys=False))
         return 0
-    text = yaml.safe_dump(cfg, sort_keys=False)
-    out.write_text(text, encoding="utf-8")
-    os.chmod(out, 0o640)
+    _write(out, cfg)
     print(f"Wrote {out}")
     if args.do_print:
-        print(text)
+        print(yaml.safe_dump(cfg, sort_keys=False))
     return 0
 
 
