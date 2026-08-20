@@ -94,11 +94,11 @@ fi
 if have_cmd docker && [[ -f "$COMPOSE" ]]; then
   log_info "Starting Postgres via Docker Compose (loopback only)"
   if [[ "${MEDLOCK_OFFLINE:-0}" == "1" ]]; then
-    if ! docker image inspect pgvector/pgvector:pg16 >/dev/null 2>&1; then
+    if ! medlock_docker image inspect pgvector/pgvector:pg16 >/dev/null 2>&1; then
       die "--offline: pgvector/pgvector:pg16 image is not cached. Load it first or use a local Postgres."
     fi
   fi
-  docker compose --env-file "${PROJECT_DIR}/.env" -f "$COMPOSE" up -d
+  medlock_docker compose --env-file "${PROJECT_DIR}/.env" -f "$COMPOSE" up -d
   for _ in $(seq 1 30); do
     if pg_ready; then
       log_ok "Docker Postgres is ready"

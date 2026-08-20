@@ -24,7 +24,10 @@
       <div class="thread-list" id="threads"></div>
       <div class="sidebar-foot">
         <span class="pill" id="model-pill"><span class="dot"></span> Local</span>
-        <a href="/admin">Control plane</a>
+        <span class="muted" id="whoami"></span>
+        <a href="/admin" id="admin-link">Control plane</a>
+        <a href="/admin?panel=stack" id="agent-link" hidden>OpenClaw stack</a>
+        <button class="ghost" type="button" id="logout-btn">Sign out</button>
       </div>
     </aside>
 
@@ -47,8 +50,9 @@
         <div class="empty" id="empty">
           <p class="kicker">Local assistant</p>
           <h2>Chat with a model that stays on this machine.</h2>
-          <p>Ask anything. Attach a PDF or image if you want it in context. Letters can still be downloaded as PDF when the reply looks like one.</p>
+          <p>Ask anything. Prefix a message with <code>@nemoclaw</code> to talk to OpenClaw.</p>
           <div class="chips" id="chips">
+            <button type="button" data-insert="@nemoclaw ">@nemoclaw</button>
             <button type="button" data-prompt="Hello — what can you help me with?">Say hello</button>
             <button type="button" data-prompt="Summarize this in a few bullets.">Summarize</button>
             <button type="button" data-prompt="Explain this like I am new to the topic.">Explain simply</button>
@@ -65,14 +69,14 @@
               <span aria-hidden="true">+</span>
               <span class="sr-only">Attach file</span>
             </label>
-            <textarea id="prompt" rows="1" placeholder="Message MedLock…"></textarea>
+            <textarea id="prompt" rows="1" placeholder="Message MedLock…  @nemoclaw for OpenClaw"></textarea>
             <button class="primary" type="submit" id="send">Send</button>
           </div>
         </form>
-        <p class="disclaimer">Runs locally. Answers can be wrong.</p>
+        <p class="disclaimer">Runs locally. Start a line with @nemoclaw to use OpenClaw.</p>
       </div>
     </main>
   </div>
-  <script src="/static/chat.js?v=noguard"></script>
+  <script src="/static/chat.js?v=nemoclaw1"></script>
 </body>
 </html>

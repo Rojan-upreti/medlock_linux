@@ -1,4 +1,3 @@
-const tokenInput = document.getElementById("admin-token");
 const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
 const livePill = document.getElementById("live-pill");
@@ -7,6 +6,7 @@ const TITLES = {
   overview: ["Workspace", "Overview"],
   models: ["Workspace", "Models"],
   endpoints: ["Workspace", "Endpoints & keys"],
+  users: ["People", "Users"],
   stats: ["Data", "Audit"],
   tables: ["Data", "Tables"],
   docs: ["Data", "Documents"],
@@ -14,27 +14,19 @@ const TITLES = {
   logs: ["System", "Logs"],
 };
 
-if (tokenInput) {
-  tokenInput.value = localStorage.getItem("medlock_admin") || "";
-  tokenInput.onchange = () => {
-    localStorage.setItem("medlock_admin", tokenInput.value.trim());
-    loadOverview();
-  };
-}
-
-function token() {
-  return (tokenInput && tokenInput.value.trim()) || localStorage.getItem("medlock_admin") || "";
-}
-
 const headers = (json = true) => ({
   ...(json ? { "Content-Type": "application/json" } : {}),
-  ...(token() ? { "X-MedLock-Token": token() } : {}),
 });
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, { credentials: "same-origin", headers: headers(), ...opts });
+  const res = await fetch(path, { credentials: "same-origin", headers: headers(!(opts.body instanceof FormData)), ...opts });
   if (res.status === 401) {
-    throw new Error("Admin API 401 — paste MEDLOCK_ADMIN_TOKEN from .env into the sidebar, then retry.");
+    location.href = "/login?next=/admin";
+    throw new Error("Login required");
+  }
+  if (res.status === 403) {
+    location.href = "/";
+    throw new Error("Admin access required");
   }
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -71,6 +63,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     setPanel(btn.dataset.panel);
     if (btn.dataset.panel === "overview") loadOverview();
     if (btn.dataset.panel === "endpoints") loadKeys();
+    if (btn.dataset.panel === "users") loadUsers();
     if (btn.dataset.panel === "stats") loadStats();
     if (btn.dataset.panel === "tables") loadTables();
     if (btn.dataset.panel === "stack") loadStack();
@@ -134,7 +127,6 @@ document.getElementById("upload-form").onsubmit = async (e) => {
   const res = await fetch("/api/admin/models/upload", {
     method: "POST",
     credentials: "same-origin",
-    headers: token() ? { "X-MedLock-Token": token() } : {},
     body: fd,
   });
   document.getElementById("upload-out").textContent = await res.text();
@@ -209,9 +201,10 @@ async function loadStats() {
         ? types.map(([k, v]) => `<div class="stat-line"><span>${escapeHtml(k)}</span><span>${v}</span></div>`).join("")
         : "<p class='muted'>No events yet.</p>")}
       ${card("Latest", recent.length
-        ? `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Status</th><th>ms</th></tr></thead><tbody>${
+        ? `<div class="table-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Event</th><th>Status</th><th>ms</th></tr></thead><tbody>${
             recent.map((r) => `<tr>
               <td>${escapeHtml((r.created_at || "").replace("T", " ").slice(0, 19))}</td>
+              <td>${escapeHtml(r.username || "—")}</td>
               <td>${escapeHtml(r.event_type || "")}</td>
               <td>${escapeHtml(String(r.status_code ?? ""))}</td>
               <td>${escapeHtml(String(r.latency_ms ?? ""))}</td>
@@ -266,7 +259,6 @@ document.getElementById("doc-form").onsubmit = async (e) => {
   const res = await fetch("/api/admin/documents/ingest", {
     method: "POST",
     credentials: "same-origin",
-    headers: token() ? { "X-MedLock-Token": token() } : {},
     body: fd,
   });
   document.getElementById("doc-out").textContent = await res.text();
@@ -278,12 +270,78 @@ document.getElementById("ingest-dir").onclick = async () => {
 
 async function loadStack() {
   const d = await api("/api/admin/nemoclaw");
-  const rows = Object.entries(d || {});
+  const inf = d.inference || {};
+  const bin = (name) => {
+    const row = d[name] || {};
+    return row.installed ? `yes (${row.path || ""})` : "no";
+  };
   document.getElementById("stack-view").innerHTML = `
     <div class="kv">
-      ${rows.map(([k, v]) => `<div class="stat-line"><span>${escapeHtml(k)}</span><span>${escapeHtml(typeof v === "object" ? JSON.stringify(v) : String(v))}</span></div>`).join("") || "<p class='muted'>No stack status.</p>"}
-    </div>`;
+      <div class="stat-line"><span>OpenShell</span><span>${escapeHtml(bin("openshell"))}</span></div>
+      <div class="stat-line"><span>NemoClaw</span><span>${escapeHtml(bin("nemoclaw"))}</span></div>
+      <div class="stat-line"><span>OpenClaw</span><span>${escapeHtml(bin("openclaw"))}</span></div>
+      <div class="stat-line"><span>Local copy</span><span>${d.vendor_ready ? "vendor/nemoclaw/bin" : "missing — run ./scripts/fetch_nemoclaw.sh"}</span></div>
+      <div class="stat-line"><span>Onboarded</span><span>${d.onboarded ? "yes" : "no"}</span></div>
+      <div class="stat-line"><span>Gateway</span><span>${d.gateway && d.gateway.running ? "yes · 127.0.0.1:" + escapeHtml(String(d.gateway.port || "")) : "stopped"}</span></div>
+      <div class="stat-line"><span>Docker</span><span>${d.docker ? "yes" : "no"}</span></div>
+      <div class="stat-line"><span>Driver</span><span>${escapeHtml((d.gateway && d.gateway.driver) || (d.docker ? "docker" : "vm"))}${d.docker ? "" : " (KVM, no GPU)"}</span></div>
+      <div class="stat-line"><span>Sandbox</span><span>${escapeHtml(d.sandbox_name || "")} · ${escapeHtml(d.lifecycle || "unknown")}</span></div>
+      <div class="stat-line"><span>Provider</span><span>${escapeHtml(d.provider || "llama-cpp")}</span></div>
+      <div class="stat-line"><span>Inference</span><span>${escapeHtml(inf.host || "127.0.0.1")}:${escapeHtml(String(inf.port || 8081))} · ${escapeHtml(inf.served_model_name || "medlock-llm")}</span></div>
+      <div class="stat-line"><span>Cloud LLM</span><span>blocked</span></div>
+    </div>
+    <p class="muted">${escapeHtml(d.note || "")}</p>`;
+  try {
+    const logs = await api("/api/admin/nemoclaw/logs");
+    document.getElementById("stack-log").textContent = (logs.lines || []).join("\n") || "(empty)";
+  } catch {
+    document.getElementById("stack-log").textContent = "";
+  }
 }
+
+document.getElementById("stack-refresh").onclick = loadStack;
+document.getElementById("stack-onboard").onclick = async () => {
+  const out = document.getElementById("stack-out");
+  out.textContent = "Onboarding… this can take several minutes. Stay on this page.";
+  try {
+    const data = await api("/api/admin/nemoclaw/onboard", { method: "POST" });
+    out.textContent = JSON.stringify(data, null, 2);
+    loadStack();
+  } catch (err) {
+    out.textContent = err.message || "Onboard failed";
+  }
+};
+document.getElementById("stack-start").onclick = async () => {
+  document.getElementById("stack-out").textContent = JSON.stringify(await api("/api/admin/nemoclaw/start", { method: "POST" }), null, 2);
+  loadStack();
+};
+document.getElementById("stack-stop").onclick = async () => {
+  document.getElementById("stack-out").textContent = JSON.stringify(await api("/api/admin/nemoclaw/stop", { method: "POST" }), null, 2);
+  loadStack();
+};
+
+document.getElementById("agent-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const prompt = document.getElementById("agent-prompt").value.trim();
+  const out = document.getElementById("agent-out");
+  const btn = document.getElementById("agent-send");
+  if (!prompt) return;
+  btn.disabled = true;
+  out.textContent = "Thinking… first reply can take a minute.";
+  try {
+    const data = await api("/api/admin/nemoclaw/prompt", {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    });
+    const text = (data && data.text) || "";
+    const via = data && data.via ? `via ${data.via}\n\n` : "";
+    out.textContent = text ? via + text : JSON.stringify(data, null, 2);
+  } catch (err) {
+    out.textContent = err.message || "Prompt failed";
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 async function loadLogs() {
   const name = document.getElementById("log-name").value;
@@ -293,4 +351,105 @@ async function loadLogs() {
 document.getElementById("log-name").onchange = loadLogs;
 document.getElementById("log-refresh").onclick = loadLogs;
 
-loadOverview();
+async function loadUsers() {
+  const box = document.getElementById("user-list");
+  if (!box) return;
+  const data = await api("/api/admin/users");
+  const rows = data.users || [];
+  if (!rows.length) {
+    box.innerHTML = "<p class='muted'>No accounts yet.</p>";
+    return;
+  }
+  box.innerHTML = rows.map((u) => {
+    const created = u.created_at ? new Date(u.created_at).toLocaleDateString() : "";
+    const bits = [u.role, created, u.disabled ? "disabled" : ""].filter(Boolean);
+    return `
+    <div class="stat-line">
+      <span>${escapeHtml(u.username)} <small class="muted">${escapeHtml(bits.join(" · "))}</small></span>
+      <span>
+        <button type="button" data-reset="${u.id}">Reset password</button>
+        ${u.disabled
+          ? `<button type="button" data-enable="${u.id}">Enable</button>`
+          : `<button type="button" data-disable="${u.id}">Disable</button>`}
+      </span>
+    </div>`;
+  }).join("");
+  box.querySelectorAll("[data-disable]").forEach((btn) => {
+    btn.onclick = async () => {
+      await api(`/api/admin/users/${btn.dataset.disable}/disable`, { method: "POST" });
+      loadUsers();
+    };
+  });
+  box.querySelectorAll("[data-enable]").forEach((btn) => {
+    btn.onclick = async () => {
+      await api(`/api/admin/users/${btn.dataset.enable}/enable`, { method: "POST" });
+      loadUsers();
+    };
+  });
+  box.querySelectorAll("[data-reset]").forEach((btn) => {
+    btn.onclick = async () => {
+      const pw = window.prompt("New password (min 8 characters)");
+      if (!pw) return;
+      try {
+        await api(`/api/admin/users/${btn.dataset.reset}/password`, {
+          method: "POST",
+          body: JSON.stringify({ password: pw }),
+        });
+        document.getElementById("user-out").textContent = "Password updated";
+      } catch (err) {
+        document.getElementById("user-out").textContent = err.message || "Reset failed";
+      }
+    };
+  });
+}
+
+const userForm = document.getElementById("user-form");
+if (userForm) {
+  userForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      const row = await api("/api/admin/users", {
+        method: "POST",
+        body: JSON.stringify({ username: fd.get("username"), password: fd.get("password") }),
+      });
+      document.getElementById("user-out").textContent = `Created ${row.username}`;
+      e.target.reset();
+      loadUsers();
+    } catch (err) {
+      document.getElementById("user-out").textContent = err.message || "Could not create user";
+    }
+  };
+}
+
+(async () => {
+  try {
+    const me = await api("/api/auth/me");
+    const who = document.getElementById("whoami");
+    if (who) who.textContent = me.username;
+    if (me.role !== "owner") {
+      location.href = "/";
+      return;
+    }
+  } catch {
+    return;
+  }
+  const logoutBtn = document.getElementById("logout-btn");
+  if (logoutBtn) {
+    logoutBtn.onclick = async () => {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      location.href = "/login";
+    };
+  }
+  const panel = new URLSearchParams(location.search).get("panel");
+  if (panel && TITLES[panel]) {
+    setPanel(panel);
+    if (panel === "stack") loadStack();
+    else if (panel === "overview") loadOverview();
+    else if (panel === "users") loadUsers();
+    else if (panel === "stats") loadStats();
+    else if (panel === "logs") loadLogs();
+  } else {
+    loadOverview();
+  }
+})();

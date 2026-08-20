@@ -136,10 +136,25 @@ def build_rag_prefix(hits: list[dict]) -> str:
     )
 
 
+def purge_demo_documents(db: Session) -> int:
+    """Remove bundled playbooks from RAG so they cannot steer ordinary chat."""
+    rows = db.query(Document).filter(Document.demo.is_(True)).all()
+    n = 0
+    for row in rows:
+        db.delete(row)
+        n += 1
+    if n:
+        db.commit()
+        log.info("purged %s demo RAG documents", n)
+    return n
+
+
 def maybe_bootstrap_demo(db: Session) -> None:
     settings = get_settings()
     demo_dir = settings.PROJECT_DIR / "data" / "demo_data"
     docs_dir = settings.data_dir() / "data" / "documents"
-    ingest_directory(db, demo_dir, demo=True)
-    if not settings.MEDLOCK_DEMO:
-        ingest_directory(db, docs_dir, demo=False)
+    if settings.MEDLOCK_DEMO:
+        ingest_directory(db, demo_dir, demo=True)
+        return
+    purge_demo_documents(db)
+    ingest_directory(db, docs_dir, demo=False)

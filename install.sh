@@ -3,6 +3,35 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ./install.sh testingv1.4.tar.gz → unpack the archive (asks where to save).
+if [[ -n "${1:-}" && "$1" != -* ]]; then
+  _archive_arg="$1"
+  _archive=""
+  for _cand in \
+    "$_archive_arg" \
+    "${PWD}/${_archive_arg}" \
+    "${HOME}/Desktop/${_archive_arg}" \
+    "${SCRIPT_DIR}/${_archive_arg}"; do
+    if [[ -f "$_cand" ]]; then
+      _archive="$_cand"
+      break
+    fi
+  done
+  if [[ -n "$_archive" ]] && tar -tzf "$_archive" >/dev/null 2>&1; then
+    _bootstrap="${SCRIPT_DIR}/packaging/install-from-archive"
+    if [[ ! -f "$_bootstrap" ]]; then
+      _bootstrap="${HOME}/Desktop/install"
+    fi
+    if [[ ! -f "$_bootstrap" ]]; then
+      printf '[FAIL] Missing archive installer (packaging/install-from-archive)\n' >&2
+      exit 1
+    fi
+    exec bash "$_bootstrap" "$_archive" "${@:2}"
+  fi
+  unset _archive_arg _archive _cand _bootstrap
+fi
+
 # shellcheck source=scripts/lib.sh
 source "${SCRIPT_DIR}/scripts/lib.sh"
 
@@ -21,7 +50,7 @@ WITH_SYSTEMD=""
 TEST_SERVICENOW=0
 REPAIR=0
 YES=0
-SKIP_NEMOCLAW=1
+SKIP_NEMOCLAW=0
 START_AFTER=1
 KEEP_DATA=0
 FRESH=0
@@ -31,6 +60,8 @@ LLAMACPP_DIR_CLI=0
 MODEL_DIR_CLI=0
 CLI_WORKSPACE=""
 CLI_DATA_DIR=""
+CLI_OWNER_USER=""
+CLI_OWNER_PASSWORD=""
 CHAT_HOSTNAME="${CHAT_HOSTNAME:-medlock.chat}"
 ADMIN_HOSTNAME="${ADMIN_HOSTNAME:-medlock.admin}"
 HF_LLM_REPO="bartowski/Qwen2.5-0.5B-Instruct-GGUF"
@@ -46,6 +77,7 @@ Frozen-archive installs (--self-contained) keep app, venv, models, chats, and lo
 in the folder you chose. Direct ./install.sh still asks for a workspace folder.
 
 Usage: ./install.sh [options]
+       ./install.sh testingv1.4.tar.gz   unpack archive, then install (asks where to save)
 
   --project-dir PATH     Install / reuse this tree (default: directory of install.sh)
   --model-dir PATH       Directory to search/store GGUF files (default: ~/models)
@@ -58,9 +90,9 @@ Usage: ./install.sh [options]
   --without-systemd      Do not install a systemd unit
   --test-servicenow      Validate optional ServiceNow env vars (never prints secrets)
   --repair               Non-destructive repair / upgrade of an existing install
-  --yes                  Auto-approve prompts (sudo hosts, NemoClaw, systemd, reinstall)
-  --skip-nemoclaw        Do not download or onboard NemoClaw / OpenShell (default)
-  --with-nemoclaw        After the LLM is healthy, offer NemoClaw / OpenShell onboard
+  --yes                  Auto-approve prompts (sudo hosts, Docker, NemoClaw, systemd, reinstall)
+  --skip-nemoclaw        Do not onboard or start NemoClaw / OpenShell (opt-out)
+  --with-nemoclaw        Onboard from vendor/nemoclaw after the LLM is healthy (default)
   --with-hosts           Ask to add medlock.chat / medlock.admin to /etc/hosts (sudo)
   --start                After install, open the MedLock desktop UI (default)
   --no-start             Install only; do not launch MedLock.sh
@@ -69,13 +101,15 @@ Usage: ./install.sh [options]
   --self-contained       Keep chats, logs, venv, and llama.cpp inside this project folder
   --workspace NAME       Workspace / organization name (skips the name prompt)
   --data-dir PATH        Parent folder for chats/uploads (skips Browse…)
+  --owner-user NAME      Owner username (skips the owner prompt)
+  --owner-password PASS  Owner password (min 8; not written to .env)
   --help                 Show this help
 
 Incompatible:
   --offline cannot be combined with --download-models
   --with-systemd cannot be combined with --without-systemd
   --non-interactive will not download models unless --download-models is also set
-  --non-interactive will not run sudo / NemoClaw / systemd enable unless --yes is set
+  --non-interactive will not run sudo / Docker / NemoClaw / systemd enable unless --yes is set
 EOF
 }
 
@@ -104,6 +138,8 @@ parse_args() {
       --self-contained) SELF_CONTAINED=1; shift ;;
       --workspace) CLI_WORKSPACE="${2:?--workspace requires NAME}"; shift 2 ;;
       --data-dir) CLI_DATA_DIR="${2:?--data-dir requires PATH}"; shift 2 ;;
+      --owner-user) CLI_OWNER_USER="${2:?--owner-user requires NAME}"; shift 2 ;;
+      --owner-password) CLI_OWNER_PASSWORD="${2:?--owner-password requires PASS}"; shift 2 ;;
       --help|-h) usage; exit 0 ;;
       *) die "Unknown flag: $1  (try --help)" ;;
     esac
@@ -250,7 +286,7 @@ preflight() {
     fi
   done
   if ! have_cmd docker; then
-    log_info "Docker is optional. Postgres can use a local server; NemoClaw may need Docker later."
+    log_info "Docker is not installed yet. This install will install Docker Engine (sudo) so Postgres can run."
   fi
 
   if [[ "$OFFLINE" != "1" && "$DOWNLOAD_MODELS" == "1" ]]; then
@@ -377,8 +413,9 @@ ensure_env() {
     llama_key="$(random_secret)"
     admin_token="$(random_secret)"
     pg_pass="$(random_secret)"
+    session_secret="$(random_secret)"
     # portable in-place env updates
-    python3 - "$envf" "$PROJECT_DIR" "$MODEL_DIR" "$LLAMACPP_DIR" "$llama_key" "$admin_token" "$pg_pass" "$CHAT_HOSTNAME" "$ADMIN_HOSTNAME" <<'PY'
+    python3 - "$envf" "$PROJECT_DIR" "$MODEL_DIR" "$LLAMACPP_DIR" "$llama_key" "$admin_token" "$pg_pass" "$CHAT_HOSTNAME" "$ADMIN_HOSTNAME" "$session_secret" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 vals = {
@@ -391,6 +428,7 @@ vals = {
     "NEMOCLAW_LLAMACPP_LOCAL_TOKEN": sys.argv[5],
     "CHAT_HOSTNAME": sys.argv[8],
     "ADMIN_HOSTNAME": sys.argv[9],
+    "MEDLOCK_SESSION_SECRET": sys.argv[10],
 }
 text = path.read_text()
 out = []
@@ -440,6 +478,28 @@ if extra:
 PY
     chmod_secret "$envf"
   fi
+  python3 - "$envf" "$(random_secret)" <<'PY'
+from pathlib import Path
+import sys
+path, secret = Path(sys.argv[1]), sys.argv[2]
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+lines = []
+found = False
+for line in text.splitlines():
+    if line.startswith("MEDLOCK_SESSION_SECRET="):
+        val = line.split("=", 1)[1].strip()
+        if not val or val == "change-me":
+            lines.append(f"MEDLOCK_SESSION_SECRET={secret}")
+        else:
+            lines.append(line)
+        found = True
+    else:
+        lines.append(line)
+if not found:
+    lines.append(f"MEDLOCK_SESSION_SECRET={secret}")
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+  chmod_secret "$envf"
   set -a
   # shellcheck disable=SC1090
   source "$envf"
@@ -560,6 +620,38 @@ PY
   export MEDLOCK_WORKSPACE="$(basename "$root")"
   export MEDLOCK_DATA_ROOT="$(dirname "$root")"
   log_ok "Workspace ${MEDLOCK_WORKSPACE} → ${MEDLOCK_DATA}"
+}
+
+ensure_owner() {
+  log_step "Owner account"
+  local py="${PROJECT_DIR}/.venv/bin/python"
+  [[ -x "$py" ]] || die "Python venv missing; cannot create owner account"
+  export PROJECT_DIR
+  if [[ -n "${MEDLOCK_DATA:-}" ]]; then
+    export MEDLOCK_DATA
+  fi
+  if "$py" "${SCRIPT_DIR}/scripts/create_owner.py" --check >/dev/null; then
+    log_ok "Owner account already exists"
+    return 0
+  fi
+  if [[ -n "$CLI_OWNER_USER" || -n "$CLI_OWNER_PASSWORD" ]]; then
+    [[ -n "$CLI_OWNER_USER" && -n "$CLI_OWNER_PASSWORD" ]] || die "Need both --owner-user and --owner-password"
+    [[ ${#CLI_OWNER_PASSWORD} -ge 8 ]] || die "Owner password must be at least 8 characters"
+    "$py" "${SCRIPT_DIR}/scripts/create_owner.py" --username "$CLI_OWNER_USER" --password "$CLI_OWNER_PASSWORD"
+    unset CLI_OWNER_PASSWORD
+    log_ok "Created owner ${CLI_OWNER_USER}"
+    return 0
+  fi
+  if [[ "$NONINTERACTIVE" == "1" ]]; then
+    die "No owner account. Re-run with --owner-user and --owner-password."
+  fi
+  local assignments
+  assignments="$(python3 "${SCRIPT_DIR}/scripts/prompt_owner.py")" || die "Owner account is required"
+  eval "$assignments"
+  [[ -n "${MEDLOCK_OWNER_USER:-}" && -n "${MEDLOCK_OWNER_PASSWORD:-}" ]] || die "Owner prompt returned no credentials"
+  "$py" "${SCRIPT_DIR}/scripts/create_owner.py" --username "$MEDLOCK_OWNER_USER" --password "$MEDLOCK_OWNER_PASSWORD"
+  unset MEDLOCK_OWNER_PASSWORD
+  log_ok "Created owner ${MEDLOCK_OWNER_USER}"
 }
 
 find_existing_gguf() {
@@ -813,8 +905,8 @@ print_report() {
   Config        : ${PROJECT_DIR}/config/local.yaml
   Chat window   : ./MedLock.sh  (opens UI; servers keep running)
   Workspace     : ${MEDLOCK_WORKSPACE:-MedLock}  (${MEDLOCK_DATA:-$PROJECT_DIR})
-  Browser       : http://127.0.0.1:${MEDLOCK_PORT:-8000}/
-  Admin         : http://127.0.0.1:${MEDLOCK_PORT:-8000}/admin
+  Browser       : http://127.0.0.1:${MEDLOCK_PORT:-8000}/  (sign in with the owner account)
+  Admin         : http://127.0.0.1:${MEDLOCK_PORT:-8000}/admin  (same owner login)
   API           : http://127.0.0.1:${MEDLOCK_PORT:-8000}/v1/chat/completions
   llama.cpp     : http://127.0.0.1:8081/v1  (loopback, API key required)
   Desktop icon  : ~/Desktop/MedLock.desktop  (Allow Launching the first time)
@@ -859,9 +951,11 @@ main() {
   # shellcheck disable=SC1091
   source "${PROJECT_DIR}/.env"
   set +a
+  "${SCRIPT_DIR}/scripts/setup_docker.sh" || log_warn "Docker setup skipped; Postgres may use sqlite until Docker or a local server is ready."
   if ! "${SCRIPT_DIR}/scripts/setup_postgres.sh"; then
-    log_warn "Postgres not ready. App can start later after you follow the printed apt commands."
+    log_warn "Postgres not ready. App can start later after Docker is running or you follow the printed apt commands."
   fi
+  ensure_owner
   if [[ "$WITH_HOSTS" == "1" ]]; then
     CHAT_HOSTNAME="$CHAT_HOSTNAME" ADMIN_HOSTNAME="$ADMIN_HOSTNAME" "${SCRIPT_DIR}/scripts/setup_hosts.sh" || log_warn "hosts setup skipped"
   else

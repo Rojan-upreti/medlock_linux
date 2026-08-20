@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.db import ApiKey, Attachment, Conversation, Message, get_db, get_session, utcnow
+from app.db import ApiKey, Attachment, Conversation, Message, User, get_db, get_session, utcnow
 from app.services import llama
 from app.services.audit import log_event
+from app.services.auth import require_user
 from app.services.embeddings import embed_texts
 from app.services.files import image_data_url, vision_enabled
 from app.services.rag import build_rag_prefix, retrieve
@@ -19,6 +21,46 @@ from app.services.redact import hash_api_key
 from app.settings import get_settings
 
 router = APIRouter(prefix="/v1", tags=["openai"])
+
+AGENT_MENTION = re.compile(r"@(?:nemo\s?claw|openclaw|openshell)\b", re.I)
+
+
+def _wants_agent(text: str) -> bool:
+    return bool(AGENT_MENTION.search(text or ""))
+
+
+def _strip_mention(text: str) -> str:
+    cleaned = AGENT_MENTION.sub(" ", text or "")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _plain_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(str(part.get("text") or ""))
+            elif isinstance(part, str):
+                parts.append(part)
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _history_for_agent(chat: list) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for m in chat:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = _strip_mention(_plain_content(m.get("content")))
+        if not text:
+            continue
+        out.append({"role": role, "content": text})
+    if out and out[-1]["role"] == "user":
+        out.pop()
+    return out[-6:]
 
 
 def _is_short_chitchat(text: str) -> bool:
@@ -103,6 +145,7 @@ async def list_models(
 async def chat_completions(
     request: Request,
     db: Session = Depends(get_db),
+    user: User = Depends(require_user),
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
@@ -173,12 +216,13 @@ async def chat_completions(
                 ]
                 break
 
+    use_agent = _wants_agent(user_text)
     rag_hits = []
-    sys_msgs = []
+    sys_msgs = [{"role": "system", "content": llama.CHAT_SYSTEM_PROMPT}]
     rag_query = user_text
     if extract_blob:
         rag_query = f"{user_text}\n{extract_blob[:1500]}"
-    skip_rag = _is_short_chitchat(user_text) and not attachments and not extract_blob
+    skip_rag = use_agent or (_is_short_chitchat(user_text) and not attachments and not extract_blob)
     if use_rag and rag_query and not skip_rag:
         rag_hits = retrieve(db, rag_query, top_k=4)
         prefix = build_rag_prefix(rag_hits)
@@ -199,9 +243,19 @@ async def chat_completions(
     conv = None
     if conversation_id:
         conv = db.get(Conversation, conversation_id)
+        if conv and conv.user_id and conv.user_id != user.id:
+            raise HTTPException(404, "conversation not found")
+        if conv and not conv.user_id:
+            conv.user_id = user.id
+            db.commit()
     if conv is None:
         title = (user_text or "New chat")[:80]
-        conv = Conversation(title=title, model=settings.SERVED_MODEL_NAME, demo=settings.MEDLOCK_DEMO)
+        conv = Conversation(
+            title=title,
+            model=settings.SERVED_MODEL_NAME,
+            demo=settings.MEDLOCK_DEMO,
+            user_id=user.id,
+        )
         db.add(conv)
         db.commit()
         db.refresh(conv)
@@ -212,7 +266,87 @@ async def chat_completions(
         db.add(Message(conversation_id=conv.id, role="user", content=stored, model=settings.SERVED_MODEL_NAME, rag_used=bool(rag_hits)))
         db.commit()
 
+    actor_id = user.id
+    actor_name = user.username
     t0 = time.perf_counter()
+    if use_agent:
+        from app.services.nemoclaw import prompt_agent
+
+        query = _strip_mention(user_text) or "Hello"
+        if chat and chat[-1].get("role") == "user":
+            query = _strip_mention(_plain_content(chat[-1].get("content"))) or query
+        result = await prompt_agent(query, history=_history_for_agent(chat))
+        content = str(result.get("text") or result.get("error") or "")
+        latency = int((time.perf_counter() - t0) * 1000)
+        db.add(
+            Message(
+                conversation_id=conv.id,
+                role="assistant",
+                content=content,
+                latency_ms=latency,
+                model="nemoclaw",
+                rag_used=False,
+            )
+        )
+        db.commit()
+        log_event(
+            db,
+            event_type="nemoclaw.chat",
+            path=str(request.url.path),
+            method="POST",
+            client_host=request.client.host if request.client else None,
+            api_key_id=key_row.id if key_row else None,
+            user_id=actor_id,
+            model="nemoclaw",
+            request_in={
+                "stream": stream,
+                "username": actor_name,
+                "via": result.get("via"),
+                "mention": True,
+            },
+            request_out={"chars": len(content)},
+            status_code=200 if result.get("ok") else 500,
+            latency_ms=latency,
+        )
+        if stream:
+
+            async def agent_gen() -> AsyncIterator[bytes]:
+                chunk = {
+                    "id": f"nemoclaw-{conv.id}",
+                    "object": "chat.completion.chunk",
+                    "model": "nemoclaw",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": content},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "conversation_id": conv.id,
+                    "agent": "nemoclaw",
+                    "via": result.get("via"),
+                }
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+                yield b"data: [DONE]\n\n"
+
+            return StreamingResponse(agent_gen(), media_type="text/event-stream")
+        body = {
+            "id": f"nemoclaw-{conv.id}",
+            "object": "chat.completion",
+            "model": "nemoclaw",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            "conversation_id": conv.id,
+            "agent": "nemoclaw",
+            "via": result.get("via"),
+        }
+        return JSONResponse(body, status_code=200)
+
     if stream:
         upstream = await llama.chat_completions(payload, stream=True)
 
@@ -255,8 +389,9 @@ async def chat_completions(
                         method="POST",
                         client_host=client_host,
                         api_key_id=key_id,
+                        user_id=actor_id,
                         model=settings.SERVED_MODEL_NAME,
-                        request_in={"stream": True, "rag_hits": len(rag_hits)},
+                        request_in={"stream": True, "rag_hits": len(rag_hits), "username": actor_name},
                         request_out={"streamed_chars": len(content)},
                         status_code=200,
                         latency_ms=latency,
@@ -300,8 +435,9 @@ async def chat_completions(
         method="POST",
         client_host=request.client.host if request.client else None,
         api_key_id=key_row.id if key_row else None,
+        user_id=actor_id,
         model=settings.SERVED_MODEL_NAME,
-        request_in={"rag_hits": len(rag_hits), "stream": False},
+        request_in={"rag_hits": len(rag_hits), "stream": False, "username": actor_name},
         request_out={"id": body.get("id"), "usage": usage},
         status_code=resp.status_code,
         latency_ms=latency,

@@ -52,7 +52,7 @@ DEFAULTS = {
     },
     "safety": {
         "require_human_confirmation_for_writes": True,
-        "medical_disclaimer": True,
+        "medical_disclaimer": False,
     },
     "logging": {
         "redact_secrets": True,

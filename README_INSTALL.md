@@ -38,10 +38,10 @@ Install from that pair (does **not** unpack over `~/Desktop/nvdiahackathon`):
 
 ```bash
 cd ~/Desktop
-./install nvdiahackathon.tar.gz
+./install.sh testingv1.4.tar.gz
 ```
 
-or `./install nvdiahackathon.gz`. A Browse dialog asks where MedLock should live; **everything** (app, `.venv`, models, chats, logs) goes in that folder. Extra flags are forwarded (`./install nvdiahackathon.tar.gz --keep-data`). Skip the dialog with `--dest PATH`. The archive omits `.env`, `.git`, `.venv`, chats, uploads, and logs.
+That installs into `~/testingv1.4` (from the archive name) with no folder picker. Extra flags are forwarded (`./install.sh testingv1.4.tar.gz --keep-data`). Choose a folder with `--dest PATH` or `--pick`. The archive omits `.env`, `.git`, `.venv`, chats, uploads, and logs.
 
 ## One-command standard installation
 
@@ -52,7 +52,7 @@ chmod +x start.sh install.sh MedLock.sh run.sh verify_install.sh uninstall.sh sc
 ./install.sh --fresh
 ```
 
-That installs anything missing (venv, llama.cpp, bundled Qwen GGUF, Python deps), asks for **one workspace name** and **where to store files** (Browse…), writes a **Desktop shortcut**, enables the **background user service**, then **opens the UI**. Closing the window leaves MedLock running.
+That installs anything missing (venv, llama.cpp, bundled Qwen GGUF, Python deps), asks for **one workspace name**, **where to store files** (Browse…), and the **owner username/password** (same login unlocks chat and admin). Extra clinic staff accounts are chat-only and created later in Admin → Users. Writes a **Desktop shortcut**, enables the **background user service**, then **opens the UI**. Closing the window leaves MedLock running.
 
 Same thing: `./install.sh` (opens the UI by default). Install only: `./install.sh --no-start`.
 
@@ -71,7 +71,7 @@ Preferred launchers:
 | `./start.sh` | install if needed, then `MedLock.sh` |
 | `./run.sh --demo` | servers in the foreground (Ctrl+C stops them) |
 
-Install pins **one** folder. Frozen `./install archive` puts chats in that same folder (`data/medlock.sqlite`, `data/uploads/`, `logs/`). Running `./install.sh` from a source tree still asks for a separate workspace folder (Browse…, default `~/MedLock/<name>`). Demo RAG playbooks still come from install `data/demo_data/`.
+Install pins **one** folder. Frozen `./install archive` puts chats in that same folder (`data/medlock.sqlite`, `data/uploads/`, `logs/`). Running `./install.sh` from a source tree still asks for a separate workspace folder (Browse…, default `~/MedLock/<name>`). Bundled `data/demo_data/` is not loaded into RAG unless `MEDLOCK_DEMO=true`.
 
 `./install.sh` wipes chats unless you pass `--keep-data` or `--repair`.
 
@@ -91,7 +91,7 @@ In the composer, use **+** or drag-and-drop. Allowed: pdf, png, jpg, webp, gif, 
 
 ## Healthcare without a fine-tune
 
-Demo playbooks under `data/demo_data/` are optional RAG context when Local documents is on. Chat does not inject a system persona.
+Demo playbooks under `data/demo_data/` are ingested only when `MEDLOCK_DEMO=true`. Default chat does not load them, so they cannot steer ordinary replies. Chat injects a short “answer directly” system turn so Qwen-Instruct does not fall back to Alibaba’s aligned default.
 
 ## Offline / preloaded-model installation
 
@@ -169,19 +169,24 @@ Create keys in the admin hub. llama.cpp itself listens on `127.0.0.1:8081` with 
 
 ## NemoClaw + OpenShell + OpenClaw
 
-After llama-server is healthy, `run.sh` can download NVIDIA’s installer **to disk first** (never `curl | bash` in one step) and onboard:
+Agents use the **same** llama-server as chat (`127.0.0.1:8081`). Manage onboard, start/stop, and logs in **Admin → OpenClaw stack**. Every onboard/start/stop/prompt is written to **Admin → Audit**.
+
+Keep a **local copy** under `vendor/nemoclaw/` so install/start do not hit the internet:
 
 ```bash
-NEMOCLAW_PROVIDER=llama-cpp
-# authenticated llama.cpp on 127.0.0.1:8081
+./scripts/fetch_nemoclaw.sh   # once, needs network; copies CLIs into vendor/nemoclaw/bin
 ```
 
-Skip with `./install.sh --skip-nemoclaw` or `MEDLOCK_SKIP_NEMOCLAW=1` (desktop launch sets this by default). Docker is optional for MedLock; NemoClaw may still want it.
+`./install.sh` then onboards from that folder (opt out: `--skip-nemoclaw`). `./MedLock.sh` / the user service **starts the sandbox** after llama-server is healthy. `--offline` works when `vendor/nemoclaw/bin` is already populated. `./scripts/pack_installer.sh` includes `vendor/nemoclaw/` in the tarball.
 
-Manual:
+Docker is optional. If Docker is not installed, OpenShell uses the local **KVM MicroVM driver** (`vendor/nemoclaw/bin/openshell-driver-vm`). No GPU is required. First sandbox create may pull a community image; chat still uses llama-server if that is slow.
+
+Workspace files: `agents/hospital-admin/` (operations assistant, not clinical SOAP).
 
 ```bash
-./scripts/setup_nemoclaw.sh
+./scripts/setup_nemoclaw.sh onboard
+./scripts/setup_nemoclaw.sh start
+./scripts/seed_openclaw_workspace.sh
 ```
 
 ## ServiceNow (optional, off by default)
@@ -202,7 +207,7 @@ High-level OAuth (least privilege):
 |---|---|
 | Local LLM | llama.cpp + local GGUF, `inference.mode: local` |
 | Local embeddings | fastembed / lexical fallback, `embeddings.mode: local` |
-| Local RAG | workspace `data/documents` + install `data/demo_data` + Postgres/SQLite chunks |
+| Local RAG | workspace `data/documents` + Postgres/SQLite chunks (`data/demo_data` only if `MEDLOCK_DEMO=true`) |
 | No cloud inference | `allow_cloud_llm: false`; `run.sh` hard-refuses otherwise |
 | OpenClaw stack | Optional NemoClaw onboard to local `:8081` |
 | User data isolation | Named workspaces under `~/MedLock/<name>/` |
@@ -297,7 +302,8 @@ Does not uninstall OS packages or the llama.cpp tree under `--llamacpp-dir`.
 ./install.sh --project-dir PATH --model-dir PATH --model-path PATH \
   --llamacpp-dir PATH --download-models --non-interactive --offline \
   --with-systemd --without-systemd --test-servicenow --repair --yes \
-  --skip-nemoclaw --keep-data --fresh --self-contained --workspace NAME --data-dir PATH --help
+  --skip-nemoclaw --keep-data --fresh --self-contained --workspace NAME --data-dir PATH \
+  --owner-user NAME --owner-password PASS --help
 ```
 
-`--fresh` wipes chats and re-asks the workspace name and data folder (no `REINSTALL` prompt). `--workspace` and `--data-dir` skip those prompts.
+`--fresh` wipes chats and re-asks the workspace name and data folder (no `REINSTALL` prompt). `--workspace` and `--data-dir` skip those prompts. `--owner-user` / `--owner-password` skip the owner prompt (required with `--non-interactive` unless an owner already exists). The password is never written to `.env`.

@@ -4,14 +4,26 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "vector";
 
+CREATE TABLE IF NOT EXISTS users (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username        TEXT NOT NULL UNIQUE,
+    password_hash   TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT 'chat' CHECK (role IN ('owner', 'chat')),
+    disabled        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title           TEXT NOT NULL DEFAULT 'New chat',
     model           TEXT NOT NULL DEFAULT 'medlock-llm',
+    user_id         UUID,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     demo            BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id UUID;
 
 CREATE TABLE IF NOT EXISTS messages (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -36,6 +48,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
     method          TEXT,
     client_host     TEXT,
     api_key_id      UUID,
+    user_id         UUID,
     model           TEXT,
     request_in      JSONB,
     request_out     JSONB,
@@ -44,8 +57,11 @@ CREATE TABLE IF NOT EXISTS audit_events (
     error           TEXT
 );
 
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS user_id UUID;
+
 CREATE INDEX IF NOT EXISTS audit_events_created_idx ON audit_events (created_at DESC);
 CREATE INDEX IF NOT EXISTS audit_events_type_idx ON audit_events (event_type);
+CREATE INDEX IF NOT EXISTS audit_events_user_idx ON audit_events (user_id);
 
 CREATE TABLE IF NOT EXISTS api_keys (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),

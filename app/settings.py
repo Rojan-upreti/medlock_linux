@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     LLAMA_API_KEY: str = ""
     MEDLOCK_ADMIN_TOKEN: str = ""
+    MEDLOCK_SESSION_SECRET: str = ""
     NEMOCLAW_LLAMACPP_LOCAL_TOKEN: str = ""
 
     DATABASE_URL: str = "sqlite:///data/medlock.sqlite"

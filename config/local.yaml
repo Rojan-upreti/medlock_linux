@@ -20,7 +20,7 @@ logging:
   level: INFO
   redact_secrets: true
 nemoclaw:
-  enabled: false
+  enabled: true
   provider: llama-cpp
   sandbox_name: medlock-assistant
 network:
@@ -41,5 +41,5 @@ rag:
   enabled: true
   top_k: 5
 safety:
-  medical_disclaimer: true
+  medical_disclaimer: false
   require_human_confirmation_for_writes: true

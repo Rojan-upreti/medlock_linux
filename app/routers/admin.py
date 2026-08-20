@@ -5,13 +5,14 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.db import ApiKey, AuditEvent, Conversation, Message, get_db, list_tables, table_preview
+from app.db import ApiKey, AuditEvent, Conversation, Message, User, get_db, list_tables, table_preview
 from app.services import hardware, llama, nemoclaw
+from app.services.auth import create_user, hash_password, owner_count, public_user, require_admin, validate_password
 from app.services.rag import ingest_directory, ingest_file
 from app.services.redact import hash_api_key, redact
 from app.settings import get_settings
@@ -26,34 +27,22 @@ def _client_host(request: Request) -> str:
     return host
 
 
-def _is_loopback(request: Request) -> bool:
-    return _client_host(request) in {"127.0.0.1", "::1", "localhost"}
-
-
-def require_admin(
-    request: Request,
-    x_medlock_token: str | None = Header(default=None, alias="X-MedLock-Token"),
-    authorization: str | None = Header(default=None),
-):
-    settings = get_settings()
-    expected = (settings.MEDLOCK_ADMIN_TOKEN or "").strip()
-    supplied = (x_medlock_token or "").strip()
-    if not supplied and authorization and authorization.lower().startswith("bearer "):
-        supplied = authorization[7:].strip()
-    cookie = (request.cookies.get("medlock_admin") or "").strip()
-    supplied = supplied or cookie
-    if expected and supplied == expected:
-        return True
-    # App binds to loopback; local browser does not need to paste .env token.
-    if _is_loopback(request):
-        return True
-    if not expected:
-        raise HTTPException(401, "Admin token is not configured")
-    raise HTTPException(401, "Invalid admin token")
-
-
 class KeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
+
+
+class ChatUserCreate(BaseModel):
+    username: str = Field(min_length=2, max_length=64)
+    password: str = Field(min_length=8, max_length=256)
+
+
+class PasswordReset(BaseModel):
+    password: str = Field(min_length=8, max_length=256)
+
+
+class AgentPrompt(BaseModel):
+    prompt: str = Field(min_length=1, max_length=8000)
+    conversation_id: str | None = None
 
 
 class HfDownload(BaseModel):
@@ -122,6 +111,8 @@ def stats(_: Any = Depends(require_admin), db: Session = Depends(get_db)):
         .all()
     )
     by_type = db.query(AuditEvent.event_type, func.count(AuditEvent.id)).group_by(AuditEvent.event_type).all()
+    ids = [e.user_id for e in recent if e.user_id]
+    names = {u.id: u.username for u in db.query(User).filter(User.id.in_(ids)).all()} if ids else {}
     return {
         "by_type": {k: v for k, v in by_type},
         "recent": [
@@ -134,6 +125,11 @@ def stats(_: Any = Depends(require_admin), db: Session = Depends(get_db)):
                 "latency_ms": e.latency_ms,
                 "model": e.model,
                 "error": e.error,
+                "user_id": e.user_id,
+                "username": (
+                    names.get(e.user_id)
+                    or ((e.request_in or {}).get("username") if isinstance(e.request_in, dict) else None)
+                ),
             }
             for e in recent
         ],
@@ -206,7 +202,14 @@ def revoke_key(kid: str, _: Any = Depends(require_admin), db: Session = Depends(
 @router.get("/logs")
 def tail_logs(name: str = "llama-server.log", lines: int = 200, _: Any = Depends(require_admin)):
     settings = get_settings()
-    allowed = {"llama-server.log", "app.log", "systemd.out.log", "systemd.err.log"}
+    allowed = {
+        "llama-server.log",
+        "app.log",
+        "systemd.out.log",
+        "systemd.err.log",
+        "nemoclaw.log",
+        "openshell-gateway.log",
+    }
     if name not in allowed:
         raise HTTPException(400, "unknown log file")
     path = settings.data_dir() / "logs" / name
@@ -297,6 +300,146 @@ async def ingest(
 @router.get("/nemoclaw")
 def nemoclaw_status(_: Any = Depends(require_admin)):
     return nemoclaw.stack_status()
+
+
+@router.post("/nemoclaw/onboard")
+def nemoclaw_onboard(user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    result = nemoclaw.onboard()
+    nemoclaw.audit_cli(
+        db,
+        event_type="nemoclaw.onboard",
+        user=user,
+        path="/api/admin/nemoclaw/onboard",
+        status_code=200 if result.get("ok") else 500,
+        request_in={"via": "admin"},
+        request_out={"ok": result.get("ok"), "exit_code": result.get("exit_code")},
+        error=None if result.get("ok") else str(result.get("error") or result.get("output") or "")[:500],
+    )
+    return result
+
+
+@router.post("/nemoclaw/start")
+def nemoclaw_start(user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    result = nemoclaw.start_sandbox()
+    nemoclaw.audit_cli(
+        db,
+        event_type="nemoclaw.start",
+        user=user,
+        path="/api/admin/nemoclaw/start",
+        status_code=200 if result.get("ok") else 503,
+        request_in={"cmd": result.get("cmd")},
+        error=None if result.get("ok") else result.get("error"),
+    )
+    return result
+
+
+@router.post("/nemoclaw/stop")
+def nemoclaw_stop(user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    result = nemoclaw.stop_sandbox()
+    nemoclaw.audit_cli(
+        db,
+        event_type="nemoclaw.stop",
+        user=user,
+        path="/api/admin/nemoclaw/stop",
+        status_code=200 if result.get("ok") else 503,
+        request_in={"cmd": result.get("cmd")},
+        error=None if result.get("ok") else result.get("error"),
+    )
+    return result
+
+
+@router.get("/nemoclaw/logs")
+def nemoclaw_logs(lines: int = 200, _: User = Depends(require_admin)):
+    return nemoclaw.tail_logs(lines)
+
+
+@router.post("/nemoclaw/prompt")
+async def nemoclaw_prompt(body: AgentPrompt, user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    result = await nemoclaw.prompt_agent(body.prompt)
+    if result.get("ok") and body.conversation_id:
+        conv = db.get(Conversation, body.conversation_id)
+        if conv and conv.user_id == user.id:
+            settings = get_settings()
+            db.add(
+                Message(
+                    conversation_id=conv.id,
+                    role="user",
+                    content=body.prompt,
+                    model=settings.SERVED_MODEL_NAME,
+                )
+            )
+            db.add(
+                Message(
+                    conversation_id=conv.id,
+                    role="assistant",
+                    content=str(result.get("text") or ""),
+                    model=settings.SERVED_MODEL_NAME,
+                    rag_used=False,
+                )
+            )
+            db.commit()
+    nemoclaw.audit_cli(
+        db,
+        event_type="nemoclaw.prompt",
+        user=user,
+        path="/api/admin/nemoclaw/prompt",
+        status_code=200 if result.get("ok") else 500,
+        request_in={"prompt": body.prompt, "via": result.get("via"), "conversation_id": body.conversation_id},
+        request_out={"ok": result.get("ok")},
+        error=None if result.get("ok") else str(result.get("error") or "")[:500],
+    )
+    return result
+
+
+@router.get("/users")
+def list_users(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    rows = db.query(User).order_by(User.created_at.asc()).all()
+    return {"users": [public_user(u) for u in rows]}
+
+
+@router.post("/users")
+def add_chat_user(body: ChatUserCreate, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    try:
+        user = create_user(db, body.username, body.password, "chat")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return public_user(user)
+
+
+@router.post("/users/{uid}/disable")
+def disable_user(uid: str, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    user = db.get(User, uid)
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.role == "owner" and owner_count(db) <= 1:
+        raise HTTPException(400, "Cannot disable the last owner")
+    user.disabled = True
+    db.commit()
+    return public_user(user)
+
+
+@router.post("/users/{uid}/enable")
+def enable_user(uid: str, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    user = db.get(User, uid)
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.disabled = False
+    db.commit()
+    return public_user(user)
+
+
+@router.post("/users/{uid}/password")
+def reset_user_password(uid: str, body: PasswordReset, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    user = db.get(User, uid)
+    if not user:
+        raise HTTPException(404, "User not found")
+    try:
+        validate_password(body.password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    user.password_hash = hash_password(body.password)
+    db.commit()
+    return {"ok": True, "id": user.id}
 
 
 def _upsert_env(path: Path, key: str, value: str) -> None:

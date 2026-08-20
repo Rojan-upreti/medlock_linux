@@ -19,7 +19,7 @@ network:
   servicenow_enabled: false
 safety:
   require_human_confirmation_for_writes: true
-  medical_disclaimer: true
+  medical_disclaimer: false
 logging:
   redact_secrets: true
   level: INFO

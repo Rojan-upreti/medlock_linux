@@ -23,6 +23,8 @@
         <button data-panel="overview" class="active">Overview</button>
         <button data-panel="models">Models</button>
         <button data-panel="endpoints">Endpoints & keys</button>
+        <p class="kicker">People</p>
+        <button data-panel="users">Users</button>
         <p class="kicker">Data</p>
         <button data-panel="stats">Audit</button>
         <button data-panel="tables">Tables</button>
@@ -32,9 +34,8 @@
         <button data-panel="logs">Logs</button>
       </nav>
       <div class="aside-foot">
-        <label class="token-box">Admin token
-          <input id="admin-token" type="password" autocomplete="off" placeholder="Required off-loopback" />
-        </label>
+        <span class="muted" id="whoami"></span>
+        <button class="ghost" type="button" id="logout-btn">Sign out</button>
         <a class="back" href="/">← Open chat</a>
       </div>
     </aside>
@@ -48,6 +49,26 @@
       </header>
       <main>
         <section id="overview" class="panel active"></section>
+        <section id="users" class="panel">
+          <p class="lede">Chat-only accounts. The owner created at install can use both chat and this panel.</p>
+          <div class="grid-2">
+            <form id="user-form" class="card">
+              <h3>Add chat user</h3>
+              <label>Username
+                <input name="username" required minlength="2" maxlength="64" autocomplete="off" />
+              </label>
+              <label>Password
+                <input name="password" type="password" required minlength="8" autocomplete="new-password" />
+              </label>
+              <button class="primary" type="submit">Create</button>
+              <pre class="out" id="user-out"></pre>
+            </form>
+            <div class="card">
+              <h3>Accounts</h3>
+              <div id="user-list" class="key-list"></div>
+            </div>
+          </div>
+        </section>
         <section id="models" class="panel">
           <p class="lede">Load a GGUF from disk or Hugging Face. Restart <code>./run.sh</code> after the file is in place.</p>
           <div class="grid-2">
@@ -124,8 +145,38 @@
           </form>
         </section>
         <section id="stack" class="panel">
-          <p class="lede">OpenClaw, NemoClaw, and OpenShell status on this host.</p>
-          <div id="stack-view"></div>
+          <p class="lede">OpenClaw, NemoClaw, and OpenShell on this host. Agents use the same local llama-server as chat. <strong>Onboard once</strong>, then talk to the agent in the box below. Do not click Start again if the sandbox already exists. Chat at <code>/</code> is ordinary Qwen; this page is the hospital-admin agent.</p>
+          <div class="grid-2">
+            <div class="card">
+              <h3>Stack</h3>
+              <div id="stack-view"></div>
+              <div class="inline" style="margin-top:0.8rem">
+                <button class="primary" type="button" id="stack-onboard">Onboard</button>
+                <button type="button" id="stack-start">Start sandbox</button>
+                <button type="button" id="stack-stop">Stop sandbox</button>
+                <button type="button" id="stack-refresh">Refresh</button>
+              </div>
+              <pre class="out" id="stack-out"></pre>
+            </div>
+            <div class="card">
+              <h3>nemoclaw.log</h3>
+              <pre class="out log" id="stack-log"></pre>
+            </div>
+          </div>
+          <div class="card" style="margin-top:1rem">
+            <h3>Ask the agent</h3>
+            <p class="muted">Sends to OpenClaw in the sandbox when that CLI is available. Otherwise the same local llama-server answers using <code>agents/hospital-admin</code>.</p>
+            <form id="agent-form">
+              <label>
+                Message
+                <textarea id="agent-prompt" rows="4" placeholder="Draft a staff notice that MRI is down on unit 4…"></textarea>
+              </label>
+              <div class="inline">
+                <button class="primary" type="submit" id="agent-send">Send</button>
+              </div>
+            </form>
+            <pre class="out" id="agent-out">(no reply yet)</pre>
+          </div>
         </section>
         <section id="logs" class="panel">
           <p class="lede">Tails from <code>logs/</code> on this machine.</p>
@@ -135,6 +186,8 @@
               <option>app.log</option>
               <option>systemd.out.log</option>
               <option>systemd.err.log</option>
+              <option>nemoclaw.log</option>
+              <option>openshell-gateway.log</option>
             </select>
             <button type="button" id="log-refresh">Refresh</button>
           </div>
@@ -143,6 +196,6 @@
       </main>
     </div>
   </div>
-  <script src="/static/admin.js"></script>
+  <script src="/static/admin.js?v=agent1"></script>
 </body>
 </html>

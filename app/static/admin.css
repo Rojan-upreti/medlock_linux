@@ -116,7 +116,13 @@ main { padding: 1.25rem 1.8rem 2.4rem; max-width: 1080px; }
   font-weight: 600;
   margin-bottom: 0.75rem;
 }
-.card label input, .card label select { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 0.92rem; }
+.card label input, .card label select, .card label textarea {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 0.92rem;
+}
+.card label textarea { min-height: 6rem; resize: vertical; }
 .check {
   flex-direction: row !important;
   align-items: center;
@@ -145,6 +151,8 @@ main { padding: 1.25rem 1.8rem 2.4rem; max-width: 1080px; }
 }
 .stat-line:last-child { border-bottom: 0; }
 .stat-line span:last-child { color: var(--ink-2); font-family: var(--mono); font-size: 0.82rem; }
+#user-list .stat-line { flex-wrap: wrap; align-items: center; }
+#user-list .stat-line span:last-child { font-family: inherit; display: flex; gap: 0.35rem; flex-wrap: wrap; }
 
 .inline { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
 .inline input { flex: 1; }

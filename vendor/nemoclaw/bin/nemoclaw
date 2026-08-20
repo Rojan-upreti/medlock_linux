@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# MEDLOCK_NEMOCLAW_SHIM=1
+# Host shim so MedLock has a `nemoclaw` CLI when NVIDIA's npm package is absent.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+export PATH="$(dirname "${BASH_SOURCE[0]}"):/usr/sbin:/sbin:${PATH}"
+if [[ -f "${ROOT}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${ROOT}/.env"
+  set +a
+fi
+PY="${ROOT}/.venv/bin/python"
+[[ -x "$PY" ]] || PY=python3
+exec "$PY" "${ROOT}/scripts/nemoclaw_cli.py" "$@"

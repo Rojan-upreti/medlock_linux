@@ -6,7 +6,7 @@ Local assistant for the Dell × NVIDIA hackathon. Inference, embeddings, RAG, an
 ./install.sh --fresh
 ```
 
-That wipes previous chats, asks for a workspace name and data folder (Browse…), starts the background service, then opens the UI. Closing the window does **not** stop MedLock.
+That wipes previous chats, asks for a workspace name, data folder (Browse…), and the **owner username/password** (same login for chat and admin). Opening MedLock shows a sign-in page. Closing the window does **not** stop MedLock.
 
 Already installed and just want to open it: `./MedLock.sh` or `./start.sh`.
 
@@ -29,7 +29,7 @@ That writes `~/Desktop/nvdiahackathon.tar.gz` (also `nvdiahackathon.gz`) and `~/
 
 ```bash
 cd ~/Desktop
-./install nvdiahackathon.tar.gz
+./install.sh testingv1.4.tar.gz
 ```
 
-or `./install nvdiahackathon.gz`. A Browse dialog asks **where MedLock should live**. That folder gets the app, Python environment, models, chats, and logs. It does not unpack over `~/Desktop/nvdiahackathon` unless you pass `--force`, and it does not reuse that tree's `.venv`. Skip the dialog with `--dest PATH`.
+That extracts into `~/testingv1.4` (from the archive name) and runs setup there. Pass `--dest PATH` or `--pick` to choose a different folder. It does not unpack over `~/Desktop/nvdiahackathon` unless you pass `--force`.

@@ -250,9 +250,20 @@ if ! wait_for_http "http://${LLAMA_HOST}:${LLAMA_PORT}/health" 120; then
   log_warn "llama-server /health did not respond; /v1/models may still come up. Check ${LOG_DIR}/llama-server.log"
 else
   log_ok "llama-server healthy"
-  if [[ "${MEDLOCK_SKIP_NEMOCLAW:-0}" != "1" && ! -f "${LOG_DIR}/.nemoclaw-onboarded" ]]; then
-    if "${PROJECT_DIR}/scripts/setup_nemoclaw.sh"; then
-      : > "${LOG_DIR}/.nemoclaw-onboarded"
+  if [[ "${MEDLOCK_SKIP_NEMOCLAW:-0}" != "1" ]]; then
+    vendor_cli="${PROJECT_DIR}/vendor/nemoclaw/bin/nemoclaw"
+    vendor_shell="${PROJECT_DIR}/vendor/nemoclaw/bin/openshell"
+    export PATH="${PROJECT_DIR}/vendor/nemoclaw/bin:${PATH}"
+    if [[ -x "$vendor_cli" || -x "$vendor_shell" || -f "${LOG_DIR}/.nemoclaw-onboarded" ]]; then
+      if [[ ! -f "${LOG_DIR}/.nemoclaw-onboarded" ]]; then
+        log_info "Onboarding NemoClaw from local vendor/ (no download)"
+        "${PROJECT_DIR}/scripts/setup_nemoclaw.sh" onboard || log_warn "NemoClaw onboard skipped; chat still works"
+      fi
+      if [[ "${MEDLOCK_SKIP_NEMOCLAW_START:-0}" != "1" ]]; then
+        "${PROJECT_DIR}/scripts/setup_nemoclaw.sh" start || log_warn "OpenShell sandbox start skipped; chat still works"
+      fi
+    else
+      log_info "No vendor/nemoclaw copy yet. Chat works. Fetch once with ./scripts/fetch_nemoclaw.sh"
     fi
   fi
 fi

@@ -60,11 +60,22 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(GUID, primary_key=True, default=lambda: str(uuid.uuid4()))
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+    role: Mapped[str] = mapped_column(String(16), default="chat")
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[str] = mapped_column(GUID, primary_key=True, default=lambda: str(uuid.uuid4()))
     title: Mapped[str] = mapped_column(String(512), default="New chat")
     model: Mapped[str] = mapped_column(String(256), default="medlock-llm")
+    user_id: Mapped[str | None] = mapped_column(GUID, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     demo: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -96,6 +107,7 @@ class AuditEvent(Base):
     method: Mapped[str | None] = mapped_column(String(16), nullable=True)
     client_host: Mapped[str | None] = mapped_column(String(256), nullable=True)
     api_key_id: Mapped[str | None] = mapped_column(GUID, nullable=True)
+    user_id: Mapped[str | None] = mapped_column(GUID, nullable=True, index=True)
     model: Mapped[str | None] = mapped_column(String(256), nullable=True)
     request_in: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     request_out: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
@@ -213,9 +225,30 @@ def get_engine():
         engine = _sqlite_engine(fallback)
 
     Base.metadata.create_all(engine)
+    _migrate_columns(engine)
     _engine = engine
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     return _engine
+
+
+def _migrate_columns(engine) -> None:
+    """create_all will not add columns to existing SQLite/Postgres tables."""
+    wanted = {
+        "conversations": [("user_id", "VARCHAR(36)")],
+        "audit_events": [("user_id", "VARCHAR(36)")],
+    }
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+    for table, cols in wanted.items():
+        if table not in tables:
+            continue
+        existing = {c["name"] for c in insp.get_columns(table)}
+        for name, typ in cols:
+            if name in existing:
+                continue
+            with engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN {name} {typ}'))
+            log.info("added column %s.%s", table, name)
 
 
 def get_session() -> Session:
@@ -262,6 +295,10 @@ def table_preview(db: Session, table: str, limit: int = 50, offset: int = 0) -> 
     for row in rows:
         item = {}
         for k, v in dict(row).items():
+            key = str(k).lower()
+            if "password" in key or key.endswith("_hash") and "key" not in key:
+                item[k] = "[redacted]"
+                continue
             if hasattr(v, "isoformat"):
                 item[k] = v.isoformat()
             elif isinstance(v, (bytes, bytearray)):

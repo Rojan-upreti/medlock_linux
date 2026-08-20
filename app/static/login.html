@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#efeae1" />
+  <title>MedLock sign in</title>
+  <link rel="stylesheet" href="/static/shared.css" />
+  <style>
+    body { display: grid; place-items: center; min-height: 100%; padding: 2rem 1rem; }
+    .card-login {
+      width: min(420px, 100%);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      padding: 1.6rem 1.5rem 1.4rem;
+    }
+    .card-login h1 { font-family: var(--serif); font-size: 1.6rem; margin: 0.2rem 0 0.35rem; }
+    .card-login label { display: block; margin: 0.85rem 0 0.35rem; font-size: 0.92rem; }
+    .card-login button { width: 100%; margin-top: 1.1rem; }
+    .err { color: var(--danger); min-height: 1.2em; margin: 0.6rem 0 0; }
+  </style>
+</head>
+<body>
+  <form class="card-login" id="form">
+    <p class="kicker">MedLock</p>
+    <h1 id="title">Sign in</h1>
+    <p class="muted" id="lede">Username and password required for chat and admin.</p>
+    <label>Username
+      <input name="username" autocomplete="username" required />
+    </label>
+    <label>Password
+      <input name="password" type="password" autocomplete="current-password" required minlength="8" />
+    </label>
+    <label id="confirm-wrap" hidden>Confirm password
+      <input name="confirm" type="password" autocomplete="new-password" minlength="8" />
+    </label>
+    <p class="err" id="err"></p>
+    <button class="primary" type="submit" id="submit">Sign in</button>
+  </form>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const next = params.get("next") || "/";
+    const form = document.getElementById("form");
+    const err = document.getElementById("err");
+    const confirmWrap = document.getElementById("confirm-wrap");
+    let setup = false;
+
+    async function boot() {
+      const res = await fetch("/api/auth/status", { credentials: "same-origin" });
+      const data = await res.json();
+      if (data.authenticated) {
+        location.replace(next);
+        return;
+      }
+      if (data.needs_setup) {
+        setup = true;
+        document.getElementById("title").textContent = "Create owner account";
+        document.getElementById("lede").textContent = "This first account unlocks chat and the admin panel.";
+        document.getElementById("submit").textContent = "Create account";
+        confirmWrap.hidden = false;
+        form.password.autocomplete = "new-password";
+      }
+    }
+
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      const username = form.username.value.trim();
+      const password = form.password.value;
+      if (setup && password !== form.confirm.value) {
+        err.textContent = "Passwords do not match.";
+        return;
+      }
+      const res = await fetch(setup ? "/api/auth/setup" : "/api/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) {
+        let msg = res.statusText;
+        try {
+          const body = await res.json();
+          msg = body.detail || body.error || msg;
+        } catch { /* ignore */ }
+        err.textContent = typeof msg === "string" ? msg : JSON.stringify(msg);
+        return;
+      }
+      location.replace(next);
+    };
+
+    boot();
+  </script>
+</body>
+</html>

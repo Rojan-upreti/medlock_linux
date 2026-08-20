@@ -7,7 +7,8 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.db import Attachment, Conversation, Message, get_db
+from app.db import Attachment, Conversation, Message, User, get_db
+from app.services.auth import require_user
 from app.services.files import MAX_BYTES, extract_text, kind_for, save_bytes, uploads_root, vision_enabled
 from app.services.letters import classify_letter, filename_for, letter_title, render_letter_pdf
 from app.services.rag import ingest_text
@@ -27,10 +28,17 @@ class LetterPdfRequest(BaseModel):
     conversation_id: str | None = None
 
 
+def _owned(db: Session, cid: str, user: User) -> Conversation:
+    row = db.get(Conversation, cid)
+    if not row or row.user_id != user.id:
+        raise HTTPException(404, "conversation not found")
+    return row
+
+
 @router.get("/conversations")
-def list_conversations(db: Session = Depends(get_db)):
+def list_conversations(user: User = Depends(require_user), db: Session = Depends(get_db)):
     settings = get_settings()
-    q = db.query(Conversation).order_by(Conversation.updated_at.desc())
+    q = db.query(Conversation).filter(Conversation.user_id == user.id).order_by(Conversation.updated_at.desc())
     if settings.MEDLOCK_DEMO:
         q = q.filter(Conversation.demo.is_(True))
     rows = q.limit(200).all()
@@ -47,9 +55,14 @@ def list_conversations(db: Session = Depends(get_db)):
 
 
 @router.post("/conversations")
-def create_conversation(body: NewConversation, db: Session = Depends(get_db)):
+def create_conversation(body: NewConversation, user: User = Depends(require_user), db: Session = Depends(get_db)):
     settings = get_settings()
-    row = Conversation(title=body.title or "New chat", model=settings.SERVED_MODEL_NAME, demo=settings.MEDLOCK_DEMO)
+    row = Conversation(
+        title=body.title or "New chat",
+        model=settings.SERVED_MODEL_NAME,
+        demo=settings.MEDLOCK_DEMO,
+        user_id=user.id,
+    )
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -57,10 +70,8 @@ def create_conversation(body: NewConversation, db: Session = Depends(get_db)):
 
 
 @router.get("/conversations/{cid}")
-def get_conversation(cid: str, db: Session = Depends(get_db)):
-    row = db.get(Conversation, cid)
-    if not row:
-        raise HTTPException(404, "conversation not found")
+def get_conversation(cid: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    row = _owned(db, cid, user)
     msgs = (
         db.query(Message)
         .filter(Message.conversation_id == cid)
@@ -86,22 +97,23 @@ def get_conversation(cid: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/conversations/{cid}")
-def delete_conversation(cid: str, db: Session = Depends(get_db)):
-    row = db.get(Conversation, cid)
-    if not row:
-        raise HTTPException(404, "conversation not found")
+def delete_conversation(cid: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    row = _owned(db, cid, user)
     db.delete(row)
     db.commit()
     return {"ok": True}
 
 
-def _ensure_conversation(db: Session, cid: str | None) -> Conversation:
+def _ensure_conversation(db: Session, cid: str | None, user: User) -> Conversation:
     settings = get_settings()
     if cid:
-        row = db.get(Conversation, cid)
-        if row:
-            return row
-    row = Conversation(title="New chat", model=settings.SERVED_MODEL_NAME, demo=settings.MEDLOCK_DEMO)
+        return _owned(db, cid, user)
+    row = Conversation(
+        title="New chat",
+        model=settings.SERVED_MODEL_NAME,
+        demo=settings.MEDLOCK_DEMO,
+        user_id=user.id,
+    )
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -127,6 +139,7 @@ def _attachment_payload(row: Attachment) -> dict:
 async def upload_attachment(
     file: UploadFile = File(...),
     conversation_id: str | None = Form(default=None),
+    user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     filename = file.filename or "upload"
@@ -139,7 +152,7 @@ async def upload_attachment(
         raise HTTPException(400, "Empty file")
     if len(data) > MAX_BYTES:
         raise HTTPException(400, "File is larger than 12 MB")
-    conv = _ensure_conversation(db, cid)
+    conv = _ensure_conversation(db, cid, user)
     path = save_bytes(filename, data)
     text = extract_text(path, kind)
     doc_id = None
@@ -183,19 +196,18 @@ async def upload_attachment(
 
 
 @router.get("/conversations/{cid}/attachments")
-def list_attachments(cid: str, db: Session = Depends(get_db)):
-    row = db.get(Conversation, cid)
-    if not row:
-        raise HTTPException(404, "conversation not found")
+def list_attachments(cid: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    _owned(db, cid, user)
     rows = db.query(Attachment).filter(Attachment.conversation_id == cid).order_by(Attachment.created_at.asc()).all()
     return [_attachment_payload(r) for r in rows]
 
 
 @router.get("/attachments/{aid}/file")
-def download_attachment(aid: str, db: Session = Depends(get_db)):
+def download_attachment(aid: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
     row = db.get(Attachment, aid)
     if not row:
         raise HTTPException(404, "attachment not found")
+    _owned(db, row.conversation_id, user)
     path = Path(row.source_path).resolve()
     root = uploads_root().resolve()
     if root not in path.parents:
@@ -206,7 +218,7 @@ def download_attachment(aid: str, db: Session = Depends(get_db)):
 
 
 @router.post("/letters/pdf")
-def download_letter_pdf(body: LetterPdfRequest):
+def download_letter_pdf(body: LetterPdfRequest, _: User = Depends(require_user)):
     kind = (body.kind or "").strip().lower() or classify_letter("", body.content) or "letter"
     title = (body.title or "").strip() or letter_title(kind)
     try:

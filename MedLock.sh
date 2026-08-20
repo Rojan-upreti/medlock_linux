@@ -12,7 +12,7 @@ ENVF="${PROJECT_DIR}/.env"
 cd "$PROJECT_DIR"
 export PROJECT_DIR
 export PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
-export MEDLOCK_SKIP_NEMOCLAW="${MEDLOCK_SKIP_NEMOCLAW:-1}"
+export MEDLOCK_SKIP_NEMOCLAW_DOWNLOAD="${MEDLOCK_SKIP_NEMOCLAW_DOWNLOAD:-1}"
 
 [[ -x "${VENV}/bin/python" ]] || die "Virtualenv missing. Run ./install.sh"
 [[ -f "$ENVF" ]] || die ".env missing. Run ./install.sh"

@@ -20,10 +20,19 @@ const attachRow = document.getElementById("attach-row");
 const composer = document.getElementById("composer");
 
 async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (!(opts.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    credentials: "same-origin",
     ...opts,
+    headers,
   });
+  if (res.status === 401) {
+    location.href = "/login?next=" + encodeURIComponent(location.pathname || "/");
+    throw new Error("Login required");
+  }
   if (!res.ok) {
     const t = await res.text();
     throw new Error(errorMessage(t, res.statusText));
@@ -114,6 +123,30 @@ function formatMessage(text) {
     .join("");
 }
 
+function isNemoclaw(text) {
+  return /@(nemo\s?claw|openclaw|openshell)\b/i.test(text || "");
+}
+
+function markAgent(bodyEl) {
+  const bubbleEl = bodyEl.closest(".bubble");
+  if (!bubbleEl || bubbleEl.querySelector(".letter-actions.agent")) return;
+  bubbleEl.classList.add("agent");
+  const bar = document.createElement("div");
+  bar.className = "letter-actions agent";
+  const kind = document.createElement("span");
+  kind.className = "kind";
+  kind.textContent = "OpenClaw";
+  bar.append(kind);
+  bubbleEl.appendChild(bar);
+}
+
+function formatUser(text) {
+  return escapeHtml(text || "").replace(
+    /@(nemoclaw|openclaw|openshell)\b/gi,
+    '<span class="mention">@$1</span>'
+  );
+}
+
 function letterKind(userText, assistantText) {
   const q = (userText || "").toLowerCase();
   const a = (assistantText || "").toLowerCase();
@@ -173,6 +206,7 @@ function attachLetterAction(bodyEl, userText, assistantText) {
 async function downloadLetterPdf(kind, title, content) {
   const res = await fetch("/api/letters/pdf", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind, title, content, conversation_id: conversationId }),
   });
@@ -215,6 +249,8 @@ function bubble(role, text, extra = "", files = []) {
   const body = document.createElement("div");
   if (role === "assistant" && extra !== "streaming" && extra !== "fail" && text) {
     setFormatted(body, text);
+  } else if (role === "user") {
+    body.innerHTML = formatUser(text);
   } else {
     body.textContent = text;
   }
@@ -263,7 +299,11 @@ async function uploadFiles(fileList) {
     const fd = new FormData();
     fd.append("file", file);
     if (conversationId) fd.append("conversation_id", conversationId);
-    const res = await fetch("/api/attachments", { method: "POST", body: fd });
+    const res = await fetch("/api/attachments", { method: "POST", credentials: "same-origin", body: fd });
+    if (res.status === 401) {
+      location.href = "/login?next=/";
+      throw new Error("Login required");
+    }
     if (!res.ok) throw new Error(await res.text());
     const row = await res.json();
     conversationId = row.conversation_id;
@@ -384,7 +424,10 @@ async function openThread(id) {
     if (m.role === "system") continue;
     const body = bubble(m.role, m.content);
     if (m.role === "user") lastUser = m.content || "";
-    if (m.role === "assistant") attachLetterAction(body, lastUser, m.content || "");
+    if (m.role === "assistant") {
+      attachLetterAction(body, lastUser, m.content || "");
+      if (isNemoclaw(lastUser)) markAgent(body);
+    }
   }
   loadThreads();
 }
@@ -406,8 +449,16 @@ document.getElementById("new-chat").onclick = async () => {
 };
 
 document.getElementById("chips").onclick = (e) => {
-  const btn = e.target.closest("button[data-prompt]");
+  const btn = e.target.closest("button[data-prompt], button[data-insert]");
   if (!btn) return;
+  if (btn.dataset.insert) {
+    const insert = btn.dataset.insert;
+    const cur = promptEl.value;
+    if (!isNemoclaw(cur)) promptEl.value = insert + cur;
+    resizePrompt();
+    promptEl.focus();
+    return;
+  }
   promptEl.value = btn.dataset.prompt;
   resizePrompt();
   form.requestSubmit();
@@ -432,6 +483,7 @@ form.addEventListener("submit", async (e) => {
   try {
     const res = await fetch("/v1/chat/completions", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: messages.slice(-8),
@@ -442,6 +494,10 @@ form.addEventListener("submit", async (e) => {
         attachment_ids: ids,
       }),
     });
+    if (res.status === 401) {
+      location.href = "/login?next=/";
+      return;
+    }
     if (!res.ok) {
       bot.classList.remove("streaming");
       bot.classList.add("fail");
@@ -452,6 +508,7 @@ form.addEventListener("submit", async (e) => {
     const decoder = new TextDecoder();
     let acc = "";
     let buffer = "";
+    let agentTurn = isNemoclaw(display);
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -470,6 +527,7 @@ form.addEventListener("submit", async (e) => {
           bot.textContent = acc;
           messagesEl.scrollTop = messagesEl.scrollHeight;
           if (obj.conversation_id) conversationId = obj.conversation_id;
+          if (obj.agent) agentTurn = true;
         } catch (_) {
           /* ignore incomplete SSE */
         }
@@ -479,6 +537,7 @@ form.addEventListener("submit", async (e) => {
     setFormatted(bot, acc);
     messages.push({ role: "assistant", content: acc });
     attachLetterAction(bot, display, acc);
+    if (agentTurn) markAgent(bot);
     loadThreads();
   } catch (err) {
     bot.classList.remove("streaming");
@@ -499,6 +558,25 @@ promptEl.addEventListener("keydown", (e) => {
 });
 
 (async () => {
+  try {
+    const me = await api("/api/auth/me");
+    const who = document.getElementById("whoami");
+    if (who) who.textContent = me.username;
+    const adminLink = document.getElementById("admin-link");
+    if (adminLink && me.role !== "owner") adminLink.hidden = true;
+    const agentLink = document.getElementById("agent-link");
+    if (agentLink && me.role === "owner") agentLink.hidden = false;
+  } catch {
+    location.href = "/login?next=/";
+    return;
+  }
+  const logoutBtn = document.getElementById("logout-btn");
+  if (logoutBtn) {
+    logoutBtn.onclick = async () => {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      location.href = "/login";
+    };
+  }
   try {
     const h = await api("/health");
     const local = h.gpu?.is_gb10 ? "GB10" : h.gpu?.nvidia_gpu_present ? "GPU" : "CPU";

@@ -43,6 +43,31 @@ repo_root_from_scripts() {
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+in_docker_group() {
+  local user="${1:-${USER:-$(id -un)}}"
+  local members
+  members="$(getent group docker 2>/dev/null | awk -F: '{print $4}')" || return 1
+  [[ ",${members}," == *",${user},"* ]]
+}
+
+# Run docker even in this login session, before the docker group has taken effect.
+medlock_docker() {
+  have_cmd docker || return 127
+  if docker info >/dev/null 2>&1; then
+    docker "$@"
+    return $?
+  fi
+  if in_docker_group; then
+    sg docker -c "docker $(printf '%q ' "$@")"
+    return $?
+  fi
+  if have_cmd sudo; then
+    sudo docker "$@"
+    return $?
+  fi
+  docker "$@"
+}
+
 confirm() {
   # confirm "question"  -> returns 0 on yes
   local prompt="${1:-Continue?}"

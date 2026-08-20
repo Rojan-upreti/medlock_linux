@@ -8,7 +8,6 @@ Type=simple
 WorkingDirectory=__PROJECT_DIR__
 EnvironmentFile=-__PROJECT_DIR__/.env
 Environment=PYTHONUNBUFFERED=1
-Environment=MEDLOCK_SKIP_NEMOCLAW=1
 ExecStart=__PROJECT_DIR__/run.sh --demo --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=5

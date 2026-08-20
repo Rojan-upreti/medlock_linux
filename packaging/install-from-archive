@@ -8,26 +8,27 @@ set -Eeuo pipefail
 
 LIVE_TREE="${HOME}/Desktop/nvdiahackathon"
 FORCE=0
+PICK=1
 DEST=""
 ARCHIVE=""
 EXTRA=()
 
 usage() {
   cat <<'EOF'
-Extract a frozen MedLock archive into a folder you choose, then install there.
+Extract a frozen MedLock archive, then run the inner installer.
 
-Usage: ./install ARCHIVE.gz [install.sh options...]
+Usage: ./install.sh ARCHIVE.tar.gz [options...]
+       ./install ARCHIVE.tar.gz [options...]
 
-  ARCHIVE              nvdiahackathon-v1.1.tar.gz, nvdiahackathon.tar.gz, or nvdiahackathon.gz
-  --dest PATH          Install into this folder (skips the Browse dialog)
+  ARCHIVE              testingv1.4.tar.gz, nvdiahackathon-v1.2.tar.gz, …
+  --dest PATH          Install here (skips the folder picker)
+  --pick               Ask where to install (folder dialog; this is the default)
+  --no-pick            Install into ~/ARCHIVE-name with no dialog
   --force              Allow a non-empty destination, or ~/Desktop/nvdiahackathon
   --help               Show this help
 
-A Browse dialog asks where MedLock should live. That folder gets the app,
-Python environment, models, chats, and logs. Nothing is reused from
-~/Desktop/nvdiahackathon.
-
-Remaining flags are passed to the extracted ./install.sh.
+Default: a folder dialog (name + Browse…) so you choose where the project
+lives. Remaining flags go to the extracted ./install.sh.
 Default inner flags: --fresh --self-contained
 EOF
 }
@@ -61,13 +62,13 @@ resolve_archive() {
 }
 
 ask_install_dest() {
-  python3 - "$HOME" <<'PY'
+  python3 - "$HOME" "${1:-MedLock}" <<'PY'
 import os, sys
 from pathlib import Path
 
 home = Path(sys.argv[1]).expanduser().resolve()
 default_parent = home
-default_name = "MedLock"
+default_name = (sys.argv[2] if len(sys.argv) > 2 else "MedLock").strip() or "MedLock"
 
 
 def refuse(path: Path) -> str | None:
@@ -221,10 +222,21 @@ emit(chosen)
 PY
 }
 
+archive_stem() {
+  local base
+  base="$(basename "$1")"
+  base="${base%.tar.gz}"
+  base="${base%.tgz}"
+  base="${base%.gz}"
+  printf '%s' "$base"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --force) FORCE=1; shift ;;
+    --pick) PICK=1; shift ;;
+    --no-pick) PICK=0; shift ;;
     --dest) DEST="${2:?--dest requires PATH}"; shift 2 ;;
     --) shift; EXTRA+=("$@"); break ;;
     -*) EXTRA+=("$1"); shift ;;
@@ -240,19 +252,38 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$ARCHIVE" ]] || die "Usage: ./install nvdiahackathon.tar.gz"
+[[ -n "$ARCHIVE" ]] || die "Usage: ./install.sh testingv1.4.tar.gz"
 [[ -f "$ARCHIVE" ]] || die "Archive not found: $ARCHIVE"
 tar -tzf "$ARCHIVE" >/dev/null 2>&1 || die "Not a gzip tar archive: $ARCHIVE"
 
-if [[ -z "$DEST" ]]; then
+# Prefer home over /tmp when the tmpfs is too small for a ~500MB extract.
+if [[ -z "${TMPDIR:-}" ]]; then
+  tmp_kb="$(df -Pk /tmp 2>/dev/null | awk 'NR==2 { print $4 }')"
+  if [[ -n "$tmp_kb" && "$tmp_kb" -lt 800000 ]]; then
+    export TMPDIR="$HOME"
+    printf '[INFO] Using TMPDIR=%s (/tmp is tight)\n' "$TMPDIR"
+  fi
+fi
+
+for a in "${EXTRA[@]+"${EXTRA[@]}"}"; do
+  case "$a" in
+    --non-interactive) [[ -z "$DEST" ]] && PICK=0 ;;
+  esac
+done
+
+if [[ -z "$DEST" && "$PICK" == "1" ]]; then
   printf '[INFO] Choose the folder where MedLock should live (app, models, chats, logs).\n'
-  if ! DEST="$(ask_install_dest)"; then
+  if ! DEST="$(ask_install_dest "$(archive_stem "$ARCHIVE")")"; then
     status=$?
     if [[ "$status" == "2" ]]; then
       die "That location is not allowed. Use --dest PATH for a dedicated folder."
     fi
     die "Install cancelled. Pass --dest PATH if you do not have a graphical dialog."
   fi
+fi
+if [[ -z "$DEST" ]]; then
+  DEST="${HOME}/$(archive_stem "$ARCHIVE")"
+  printf '[INFO] Installing into %s (pass --dest PATH or --pick to choose)\n' "$DEST"
 fi
 DEST="${DEST/#\~/$HOME}"
 mkdir -p "$(dirname "$DEST")"
@@ -274,6 +305,9 @@ fi
 if [[ -e "$DEST" ]] && [[ -n "$(ls -A "$DEST" 2>/dev/null || true)" ]]; then
   if [[ "$FORCE" == "1" ]]; then
     printf '[WARN] --force: installing into existing %s\n' "$DEST"
+  elif [[ -f "${DEST}/install.sh" && -f "${DEST}/MedLock.sh" ]]; then
+    printf '[INFO] Reusing existing MedLock folder %s\n' "$DEST"
+    FORCE=1
   else
     die "Destination exists and is not empty: $DEST  (pass --force to reuse it)"
   fi

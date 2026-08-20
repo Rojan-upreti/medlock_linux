@@ -5,12 +5,13 @@ from pathlib import Path
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.db import get_engine, get_session
-from app.routers import admin, chat, health, openai_v1
+from app.routers import admin, auth, chat, health, openai_v1
+from app.services.auth import user_from_request
 from app.services.llama import LlamaError
 from app.services.rag import maybe_bootstrap_demo
 from app.settings import get_settings
@@ -39,11 +40,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MedLock",
     description="Local-only enterprise inference control plane. Cloud LLM use is disabled.",
-    version="1.0.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
 app.include_router(health.router)
+app.include_router(auth.router)
 app.include_router(openai_v1.router)
 app.include_router(chat.router)
 app.include_router(admin.router)
@@ -77,18 +79,52 @@ def _wants_admin(request: Request) -> bool:
     return path == "/admin" or path.startswith("/admin/")
 
 
+def _login_redirect(next_path: str) -> RedirectResponse:
+    return RedirectResponse(f"/login?next={next_path}", status_code=302)
+
+
+@app.get("/login")
+async def login_page():
+    return FileResponse(STATIC / "login.html")
+
+
 @app.get("/")
 async def root(request: Request):
+    db = get_session()
+    try:
+        user = user_from_request(request, db)
+    finally:
+        db.close()
+    if not user:
+        return _login_redirect("/")
     if _wants_admin(request):
+        if user.role != "owner":
+            return RedirectResponse("/chat", status_code=302)
         return FileResponse(STATIC / "admin.html")
     return FileResponse(STATIC / "chat.html")
 
 
 @app.get("/admin")
-async def admin_page():
+async def admin_page(request: Request):
+    db = get_session()
+    try:
+        user = user_from_request(request, db)
+    finally:
+        db.close()
+    if not user:
+        return _login_redirect("/admin")
+    if user.role != "owner":
+        return RedirectResponse("/chat", status_code=302)
     return FileResponse(STATIC / "admin.html")
 
 
 @app.get("/chat")
-async def chat_page():
+async def chat_page(request: Request):
+    db = get_session()
+    try:
+        user = user_from_request(request, db)
+    finally:
+        db.close()
+    if not user:
+        return _login_redirect("/chat")
     return FileResponse(STATIC / "chat.html")
